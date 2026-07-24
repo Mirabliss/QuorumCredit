@@ -112,24 +112,20 @@ fn test_vouching_score() {
 
 #[test]
 fn test_different_repayment_histories_produce_different_scores() {
-    use crate::QuorumCreditContract;
-
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(crate::QuorumCreditContract, ());
-    env.as_contract(&contract_id, || {    let borrower_early = Address::generate(&env);
+    let borrower_early = Address::generate(&env);
     let borrower_late = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        // Initialize credit score config
         env.storage()
             .instance()
             .set(&DataKey::CreditScoreConfig, &DEFAULT_CREDIT_SCORE_CONFIG);
 
-        // Borrower with early repayments
         let loan_id_early = 1u64;
         let now = env.ledger().timestamp();
-        let deadline = now + 100_000; // Far in future
+        let deadline = now + 100_000;
 
         let loan_early = LoanRecord {
             id: loan_id_early,
@@ -148,7 +144,7 @@ fn test_different_repayment_histories_produce_different_scores() {
             defaulted: false,
             created_at: now,
             disbursement_timestamp: now,
-            repayment_timestamp: Some(now + 10_000), // Repaid 10k secs before deadline (early)
+            repayment_timestamp: Some(now + 10_000),
             deadline,
             loan_purpose: soroban_sdk::String::from_str(&env, "test"),
             token_address: Address::generate(&env),
@@ -185,7 +181,7 @@ fn test_different_repayment_histories_produce_different_scores() {
             defaulted: false,
             created_at: now,
             disbursement_timestamp: now,
-            repayment_timestamp: Some(deadline + 10_000), // Repaid 10k secs after deadline (late)
+            repayment_timestamp: Some(deadline + 10_000),
             deadline,
             loan_purpose: soroban_sdk::String::from_str(&env, "test"),
             token_address: Address::generate(&env),
@@ -204,28 +200,21 @@ fn test_different_repayment_histories_produce_different_scores() {
             suspension_amount_repaid: 0,
         };
 
-        // Store loans
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id_early), &loan_early);
         env.storage()
             .persistent()
             .set(&DataKey::Loan(loan_id_late), &loan_late);
-
-        // Set loan counter
         env.storage()
             .persistent()
             .set(&DataKey::LoanCounter, &(2u64));
-
-        // Set loan counts
         env.storage()
             .persistent()
             .set(&DataKey::LoanCount(borrower_early.clone()), &(1u32));
         env.storage()
             .persistent()
             .set(&DataKey::LoanCount(borrower_late.clone()), &(1u32));
-
-        // Set repayment counts
         env.storage()
             .persistent()
             .set(&DataKey::RepaymentCount(borrower_early.clone()), &(1u32));
@@ -233,8 +222,7 @@ fn test_different_repayment_histories_produce_different_scores() {
             .persistent()
             .set(&DataKey::RepaymentCount(borrower_late.clone()), &(1u32));
 
-        // Set registration timestamps (same account age)
-        let registration_time = now - 30_000_000; // ~1 year old
+        let registration_time = now - 30_000_000;
         env.storage()
             .persistent()
             .set(&DataKey::BorrowerRegistered(borrower_early.clone()), &registration_time);
@@ -242,47 +230,42 @@ fn test_different_repayment_histories_produce_different_scores() {
             .persistent()
             .set(&DataKey::BorrowerRegistered(borrower_late.clone()), &registration_time);
 
-    // Early repayer should have higher score than late repayer
-    assert!(
-        score_early.score > score_late.score,
-        "Early repayment score ({}) should be > late repayment score ({})",
-        score_early.score,
-        score_late.score
-    );
-    
-    // Early repayer should have positive avg_repayment_time
-    assert!(
-        score_early.avg_repayment_time > 0,
-        "Early repayment avg_repayment_time ({}) should be positive",
-        score_early.avg_repayment_time
-    );
-    
-    // Late repayer should have negative avg_repayment_time
-    assert!(
-        score_late.avg_repayment_time < 0,
-        "Late repayment avg_repayment_time ({}) should be negative",
-        score_late.avg_repayment_time
-    );    });
+        let score_early = calculate_credit_score(&env, &borrower_early).unwrap();
+        let score_late = calculate_credit_score(&env, &borrower_late).unwrap();
+
+        assert!(
+            score_early.score > score_late.score,
+            "Early repayment score ({}) should be > late repayment score ({})",
+            score_early.score,
+            score_late.score
+        );
+        assert!(
+            score_early.avg_repayment_time > 0,
+            "Early repayment avg_repayment_time ({}) should be positive",
+            score_early.avg_repayment_time
+        );
+        assert!(
+            score_late.avg_repayment_time < 0,
+            "Late repayment avg_repayment_time ({}) should be negative",
+            score_late.avg_repayment_time
+        );
+    });
 }
 
 #[test]
 fn test_credit_score_total_borrowed() {
-    use crate::QuorumCreditContract;
-
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(crate::QuorumCreditContract, ());
-    env.as_contract(&contract_id, || {    let borrower = Address::generate(&env);
+    let borrower = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         let now = env.ledger().timestamp();
 
-        // Initialize credit score config
         env.storage()
             .instance()
             .set(&DataKey::CreditScoreConfig, &DEFAULT_CREDIT_SCORE_CONFIG);
 
-        // Create two loans
         let loan1 = LoanRecord {
             id: 1u64,
             borrower: borrower.clone(),
@@ -355,14 +338,11 @@ fn test_credit_score_total_borrowed() {
             suspension_amount_repaid: 0,
         };
 
-        // Store loans
         env.storage().persistent().set(&DataKey::Loan(1u64), &loan1);
         env.storage().persistent().set(&DataKey::Loan(2u64), &loan2);
         env.storage()
             .persistent()
             .set(&DataKey::LoanCounter, &(2u64));
-
-        // Set counts
         env.storage()
             .persistent()
             .set(&DataKey::LoanCount(borrower.clone()), &(2u32));
@@ -373,31 +353,28 @@ fn test_credit_score_total_borrowed() {
             .persistent()
             .set(&DataKey::BorrowerRegistered(borrower.clone()), &now);
 
-    // Total borrowed should be 500_000 + 300_000 = 800_000
-    assert_eq!(
-        credit_score.total_borrowed, 800_000,
-        "Total borrowed should be 800_000"
-    );    });
+        let credit_score = calculate_credit_score(&env, &borrower).unwrap();
+        assert_eq!(
+            credit_score.total_borrowed, 800_000,
+            "Total borrowed should be 800_000"
+        );
+    });
 }
 
 #[test]
 fn test_credit_score_total_repaid() {
-    use crate::QuorumCreditContract;
-
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(crate::QuorumCreditContract, ());
-    env.as_contract(&contract_id, || {    let borrower = Address::generate(&env);
+    let borrower = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         let now = env.ledger().timestamp();
 
-        // Initialize credit score config
         env.storage()
             .instance()
             .set(&DataKey::CreditScoreConfig, &DEFAULT_CREDIT_SCORE_CONFIG);
 
-        // Create a loan with partial repayment
         let loan = LoanRecord {
             id: 1u64,
             borrower: borrower.clone(),
@@ -408,7 +385,7 @@ fn test_credit_score_total_repaid() {
             escrow_status: crate::types::EscrowStatus::None,
             co_borrowers: Vec::new(&env),
             amount: 1_000_000,
-            amount_repaid: 750_000, // Partial repayment
+            amount_repaid: 750_000,
             total_yield: 20_000,
             status: LoanStatus::Active,
             repaid: false,
@@ -438,7 +415,6 @@ fn test_credit_score_total_repaid() {
         env.storage()
             .persistent()
             .set(&DataKey::LoanCounter, &(1u64));
-
         env.storage()
             .persistent()
             .set(&DataKey::LoanCount(borrower.clone()), &(1u32));
@@ -449,11 +425,12 @@ fn test_credit_score_total_repaid() {
             .persistent()
             .set(&DataKey::BorrowerRegistered(borrower.clone()), &now);
 
-    // Total repaid should be 750_000
-    assert_eq!(
-        credit_score.total_repaid, 750_000,
-        "Total repaid should be 750_000"
-    );    });
+        let credit_score = calculate_credit_score(&env, &borrower).unwrap();
+        assert_eq!(
+            credit_score.total_repaid, 750_000,
+            "Total repaid should be 750_000"
+        );
+    });
 }
 
 #[test]
