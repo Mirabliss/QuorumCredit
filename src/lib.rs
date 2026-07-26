@@ -60,6 +60,7 @@ pub mod vouch_syndication;
 pub mod vouch_milestones;
 pub mod recurring_payment;
 pub mod loan_attribution;
+pub mod loan_cart;
 
 #[cfg(test)]
 mod governance_test;
@@ -1362,6 +1363,49 @@ impl QuorumCreditContract {
             sector,
             region,
         )
+    }
+
+    // ── Loan Request Cart (batch loan requests) ──────────────────────────────
+
+    /// Stage a loan request in the borrower's cart instead of submitting it
+    /// immediately. Multiple items can be staged and submitted together via
+    /// `submit_batch_loan_request`.
+    pub fn add_to_loan_cart(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        tenure_secs: u64,
+    ) -> loan_cart::LoanCart {
+        loan_cart::add_to_loan_cart(env, borrower, amount, tenure_secs)
+    }
+
+    /// Read a borrower's currently staged cart contents.
+    pub fn get_loan_cart(env: Env, borrower: Address) -> loan_cart::LoanCart {
+        loan_cart::get_loan_cart(env, borrower)
+    }
+
+    /// Clear a borrower's cart without submitting it (recorded as abandoned).
+    pub fn abandon_loan_cart(env: Env, borrower: Address) {
+        loan_cart::abandon_loan_cart(env, borrower)
+    }
+
+    /// Submit every staged cart item as an individual loan request. Batches
+    /// of 3 or more items receive a 1% volume discount on requested
+    /// principal. Returns a per-item result.
+    pub fn submit_batch_loan_request(
+        env: Env,
+        borrower: Address,
+        loan_purpose: String,
+        threshold: i128,
+        token: Address,
+    ) -> Vec<loan_cart::BatchLoanRequestResult> {
+        loan_cart::submit_batch_loan_request(env, borrower, loan_purpose, threshold, token)
+    }
+
+    /// Read protocol-wide cart funnel statistics (created vs. submitted vs.
+    /// abandoned), for product analytics.
+    pub fn get_cart_abandonment_stats(env: Env) -> loan_cart::CartAbandonmentStats {
+        loan_cart::get_cart_abandonment_stats(env)
     }
 
     // ── Liquidity Rebalancing (Issue #88) ─────────────────────────────────────
