@@ -59,6 +59,7 @@ pub mod syndication;
 pub mod vouch_syndication;
 pub mod vouch_milestones;
 pub mod recurring_payment;
+pub mod loan_attribution;
 
 #[cfg(test)]
 mod governance_test;
@@ -1303,6 +1304,64 @@ impl QuorumCreditContract {
             .instance()
             .get(&DataKey::LoanPoolCounter)
             .unwrap_or(0)
+    }
+
+    // ── Loan Performance Attribution ─────────────────────────────────────────
+
+    /// Record the performance drivers (credit score, vouch quality, sector,
+    /// region) for a loan so they can later be attributed to its outcome.
+    pub fn record_loan_performance_factors(
+        env: Env,
+        loan_id: u64,
+        borrower: Address,
+        credit_score: u32,
+        vouch_quality_bps: u32,
+        sector: String,
+        region: String,
+    ) -> loan_attribution::PerformanceFactors {
+        loan_attribution::record_performance_factors(
+            env,
+            loan_id,
+            borrower,
+            credit_score,
+            vouch_quality_bps,
+            sector,
+            region,
+        )
+    }
+
+    /// Analyze how much each tracked factor contributed to a loan's outcome.
+    pub fn analyze_loan_attribution(
+        env: Env,
+        loan_id: u64,
+    ) -> loan_attribution::Attribution {
+        loan_attribution::analyze_loan_performance_attribution(env, loan_id)
+    }
+
+    /// Generate an aggregate performance report broken down by factor,
+    /// across every loan analyzed so far.
+    pub fn generate_factor_report(
+        env: Env,
+    ) -> loan_attribution::FactorPerformanceReport {
+        loan_attribution::generate_factor_performance_report(env)
+    }
+
+    /// Predict the likelihood of successful repayment (0-10_000 bps) for a
+    /// hypothetical loan given its factors, based on historical attribution.
+    pub fn predict_loan_success_bps(
+        env: Env,
+        credit_score: u32,
+        vouch_quality_bps: u32,
+        sector: String,
+        region: String,
+    ) -> u32 {
+        loan_attribution::predict_loan_success_probability_bps(
+            env,
+            credit_score,
+            vouch_quality_bps,
+            sector,
+            region,
+        )
     }
 
     // ── Liquidity Rebalancing (Issue #88) ─────────────────────────────────────
