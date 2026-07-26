@@ -3,6 +3,8 @@ import { issueToken } from "../auth/tokens.js";
 import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { recurringPaymentStore } from "../recurring/recurringPaymentStore.js";
+import { handleWebhookRequest, type WebhookRoutesContext } from "./webhookRoutes.js";
+import { handleLoanForecastRequest, handleRecordForecastAccuracy } from "./forecastRoutes.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -198,8 +200,25 @@ export function handleHttpRequest(
     return;
   }
 
+  // Loan forecast endpoints
+  const forecastMatch = url.pathname.match(/^\/loans\/([^/]+)\/forecast$/);
+  if (forecastMatch && req.method === "GET") {
+    handleLoanForecastRequest(req, res, decodeURIComponent(forecastMatch[1] as string), url);
+    return;
+  }
+
+  const forecastAccuracyMatch = url.pathname.match(/^\/loans\/([^/]+)\/forecast\/accuracy$/);
+  if (forecastAccuracyMatch && req.method === "POST") {
+    handleRecordForecastAccuracy(req, res, decodeURIComponent(forecastAccuracyMatch[1] as string));
+    return;
+  }
+
   // Webhook endpoints
-  if (url.pathname.startsWith("/api/webhooks") || url.pathname === "/webhook") {
+  if (
+    url.pathname.startsWith("/api/webhooks") ||
+    url.pathname === "/webhook" ||
+    url.pathname === "/webhooks/subscribe"
+  ) {
     const webhookCtx: WebhookRoutesContext = {
       webhookSecret: ctx.webhookSecret,
     };
