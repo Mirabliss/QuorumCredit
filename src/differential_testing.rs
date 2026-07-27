@@ -263,41 +263,41 @@ mod tests {
     }
 }
 
-//! # Differential Testing Documentation
-//!
-//! ## Overview
-//! This module implements differential testing for the QuorumCredit contract.
-//! Differential testing verifies the main implementation against a simpler
-//! reference model to catch inconsistencies.
-//!
-//! ## Testing Strategy
-//! 1. **Reference Implementation**: Simplified Python-like logic for core operations
-//! 2. **Test Harness**: Infrastructure to run same tests on both implementations
-//! 3. **State Transition Testing**: Verify state changes are consistent
-//! 4. **Property-Based Testing**: Use fuzzing to generate diverse test cases
-//! 5. **Documentation**: Track any divergences and explain them
-//!
-//! ## Key Properties
-//! - Positive stakes should always be accepted for non-self vouches
-//! - Negative amounts should always be rejected
-//! - Interest calculations should be deterministic
-//! - State transitions should follow logical rules
-//! - Maturity bonuses should increase monotonically with tenure
-//! - Loyalty bonuses should activate after 2 years
-//!
-//! ## Fuzzing Integration
-//! The test suite uses property-based testing to generate:
-//! - Random stake amounts (both valid and invalid)
-//! - Random time intervals
-//! - Random interest rates
-//! - Random voucher/borrower addresses
-//!
-//! Each generated test case is run through both implementations
-//! and results are compared.
-//!
-//! ## Divergence Tracking
-//! When the main implementation diverges from reference behavior:
-//! 1. The divergence is logged with details
-//! 2. Investigation determines if it's a bug or intended behavior
-//! 3. Documentation is updated to explain the divergence
-//! 4. Tests are added to prevent regression
+// # Differential Testing Documentation
+//
+// ## Overview
+// This module implements differential testing for the QuorumCredit contract.
+// Differential testing verifies the main implementation against a simpler
+// reference model to catch inconsistencies.
+//
+// ## Testing Strategy
+// 1. **Reference Implementation**: Simplified Python-like logic for core operations
+// 2. **Test Harness**: Infrastructure to run same tests on both implementations
+// 3. **State Transition Testing**: Verify state changes are consistent
+// 4. **Property-Based Testing**: Use fuzzing to generate diverse test cases
+// 5. **Documentation**: Track any divergences and explain them
+//
+// ## Key Properties
+// - Positive stakes should always be accepted for non-self vouches
+// - Negative amounts should always be rejected
+// - Interest calculations should be deterministic
+// - State transitions should follow logical rules
+// - Maturity bonuses should increase monotonically with tenure
+// - Loyalty bonuses should activate after 2 years
+//
+// ## Fuzzing Integration
+// The test suite uses property-based testing to generate:
+// - Random stake amounts (both valid and invalid)
+// - Random time intervals
+// - Random interest rates
+// - Random voucher/borrower addresses
+//
+// Each generated test case is run through both implementations
+// and results are compared.
+//
+// ## Divergence Tracking
+// When the main implementation diverges from reference behavior:
+// 1. The divergence is logged with details
+// 2. Investigation determines if it's a bug or intended behavior
+// 3. Documentation is updated to explain the divergence
+// 4. Tests are added to prevent regression
