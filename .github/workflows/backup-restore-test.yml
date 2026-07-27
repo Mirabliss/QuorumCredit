@@ -1,0 +1,50 @@
+name: Backup and Restore Testing
+
+# Issue #1225: proves restore capability on a schedule instead of discovering
+# it's broken during a real incident. Runs scripts/test_backup_restore.sh,
+# which backs up the configured contract, verifies manifest completeness and
+# checksum integrity, and (when staging + execute secrets are configured)
+# restores into a disposable staging contract and diffs restored state
+# against the backup.
+
+on:
+  schedule:
+    # Every Sunday at 03:00 UTC.
+    - cron: "0 3 * * 0"
+  workflow_dispatch: {}
+
+jobs:
+  backup-restore-drill:
+    name: Weekly backup/restore drill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stellar CLI and jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          if ! command -v stellar &>/dev/null; then
+            cargo install --locked stellar-cli || echo "stellar CLI install skipped/failed — drill will report accordingly"
+          fi
+
+      - name: Run backup/restore drill
+        env:
+          CONTRACT_ID: ${{ secrets.BACKUP_TEST_CONTRACT_ID }}
+          ADMIN_KEY: ${{ secrets.BACKUP_TEST_ADMIN_KEY }}
+          NETWORK: ${{ vars.BACKUP_TEST_NETWORK || 'testnet' }}
+          STAGING_CONTRACT_ID: ${{ secrets.BACKUP_TEST_STAGING_CONTRACT_ID }}
+          STAGING_ADMIN_KEY: ${{ secrets.BACKUP_TEST_STAGING_ADMIN_KEY }}
+          BACKUP_TEST_EXECUTE: ${{ vars.BACKUP_TEST_EXECUTE || 'false' }}
+        run: ./scripts/test_backup_restore.sh --network "${NETWORK}"
+
+      - name: Upload backup artifacts and history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-restore-drill-${{ github.run_id }}
+          path: |
+            backups/test-results/history.jsonl
+            backups/backup_*.tar.gz
+          retention-days: 90
+          if-no-files-found: warn
