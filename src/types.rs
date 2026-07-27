@@ -807,28 +807,15 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
-
-    // ── Issue #1241: Governance Token with DAO Voting ─────────────────────────
-    /// holder → GovTokenBalance
-    GovTokenBalance(Address),
-    /// proposal_id → DaoProposal
-    DaoProposal(u64),
-    /// Monotonically increasing DAO proposal counter.
-    DaoProposalCounter,
-    /// delegator → GovDelegation
-    GovDelegation(Address),
-    /// Global governance participation metrics.
-    GovParticipationMetrics,
-
-    // ── Issue #1243: Dynamic Interest Rate Based on Utilization ───────────────
-    /// Global utilization-based rate configuration.
-    UtilizationRateConfig,
-    /// Most recent utilization rate snapshot.
-    UtilizationRateSnapshot,
-
-    // ── Issue #1245: Loyalty Program with Tiered Rewards ──────────────────────
-    /// user → LoyaltyRecord
-    LoyaltyRecord(Address),
+    // ── Liquidity Mining Campaigns (Issue #1257) ─────────────────────────────
+    /// campaign_id → MiningCampaign
+    MiningCampaign(u64),
+    /// Monotonically increasing campaign ID counter
+    MiningCampaignCounter,
+    /// (campaign_id, participant) → i128 reward claimed so far
+    MiningClaimed(u64, Address),
+    /// (campaign_id, participant) → i128 total participation (stake-seconds accumulated)
+    MiningParticipation(u64, Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -845,6 +832,64 @@ pub struct CollateralPool {
     pub borrower: Option<Address>,
     pub active: bool,
     pub created_at: u64,
+}
+
+// ── Liquidity Mining (Issue #1257) ────────────────────────────────────────────
+
+/// Campaign type governing how rewards are distributed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MiningCampaignType {
+    /// Rewards proportional to each participant's stake contribution.
+    ProportionalStake,
+    /// Flat reward per unique participating voucher (equal-split).
+    FlatPerVoucher,
+    /// Rewards proportional to voucher reputation score.
+    ReputationWeighted,
+}
+
+/// Lifecycle state of a liquidity mining campaign.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MiningCampaignStatus {
+    /// Accepting participants; rewards not yet claimable.
+    Active,
+    /// Campaign ended; rewards are claimable.
+    Ended,
+    /// Campaign was cancelled before ending; no rewards disbursed.
+    Cancelled,
+}
+
+/// Issue #1257: A liquidity mining campaign record stored on-chain.
+///
+/// Campaigns bootstrap liquidity by distributing rewards from `incentive_pool`
+/// to vouchers who participate during `[start_timestamp, end_timestamp)`.
+/// The reward each participant earns depends on the `campaign_type`.
+#[contracttype]
+#[derive(Clone)]
+pub struct MiningCampaign {
+    /// Unique campaign identifier (1-indexed monotonic counter).
+    pub campaign_id: u64,
+    /// Creator/sponsor of the campaign (must be an admin).
+    pub creator: Address,
+    /// Token used for both participation tracking and reward payout.
+    pub token: Address,
+    /// Total reward tokens deposited into the campaign pool, in stroops.
+    pub incentive_pool: i128,
+    /// Reward tokens already distributed so far, in stroops.
+    pub distributed: i128,
+    /// Campaign start ledger timestamp (inclusive).
+    pub start_timestamp: u64,
+    /// Campaign end ledger timestamp (exclusive).
+    pub end_timestamp: u64,
+    /// Distribution algorithm.
+    pub campaign_type: MiningCampaignType,
+    /// Lifecycle status.
+    pub status: MiningCampaignStatus,
+    /// Total accumulated participation weight (stake-seconds or voucher count).
+    pub total_participation: i128,
+    /// Number of unique participants who have recorded participation.
+    pub participant_count: u64,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────

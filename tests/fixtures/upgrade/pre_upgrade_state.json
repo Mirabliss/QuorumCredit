@@ -1,0 +1,71 @@
+{
+  "description": "Representative pre-upgrade contract state used by scripts/upgrade_pipeline_test.sh to validate that a migration preserves data correctly.",
+  "config": {
+    "admins": ["GADMIN1EXAMPLE", "GADMIN2EXAMPLE", "GADMIN3EXAMPLE"],
+    "admin_threshold": 2,
+    "yield_bps": 200,
+    "slash_bps": 5000,
+    "min_loan_amount": 100000,
+    "max_loan_amount": 10000000000,
+    "max_loan_to_stake_ratio": 2,
+    "paused": false
+  },
+  "loans": [
+    {
+      "borrower": "GBORROWER1EXAMPLE",
+      "token": "native",
+      "principal": 5000000,
+      "disbursed_at_ledger": 1000000,
+      "deadline_ledger": 1100000,
+      "status": "active",
+      "amount_repaid": 0
+    },
+    {
+      "borrower": "GBORROWER2EXAMPLE",
+      "token": "native",
+      "principal": 2000000,
+      "disbursed_at_ledger": 990000,
+      "deadline_ledger": 1090000,
+      "status": "repaid",
+      "amount_repaid": 2000000
+    },
+    {
+      "borrower": "GBORROWER3EXAMPLE",
+      "token": "native",
+      "principal": 1000000,
+      "disbursed_at_ledger": 900000,
+      "deadline_ledger": 950000,
+      "status": "defaulted",
+      "amount_repaid": 0
+    }
+  ],
+  "vouches": [
+    {
+      "voucher": "GVOUCHER1EXAMPLE",
+      "borrower": "GBORROWER1EXAMPLE",
+      "token": "native",
+      "stake": 3000000
+    },
+    {
+      "voucher": "GVOUCHER2EXAMPLE",
+      "borrower": "GBORROWER1EXAMPLE",
+      "token": "native",
+      "stake": 2000000
+    },
+    {
+      "voucher": "GVOUCHER3EXAMPLE",
+      "borrower": "GBORROWER2EXAMPLE",
+      "token": "native",
+      "stake": 4000000
+    }
+  ],
+  "credit_scores": [
+    { "account": "GBORROWER1EXAMPLE", "score": 620 },
+    { "account": "GBORROWER2EXAMPLE", "score": 810 },
+    { "account": "GBORROWER3EXAMPLE", "score": 240 }
+  ],
+  "treasury": {
+    "fee_treasury": 15000000,
+    "slash_treasury": 500000
+  }
+}
