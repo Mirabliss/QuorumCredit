@@ -807,6 +807,26 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
+    // ── Issue #1074: Reentrancy Guard ─────────────────────────────────────────
+    /// u32 reentrancy guard flag: 0 = unlocked, 1 = locked
+    ReentrancyGuard,
+    // ── Issue #1075: Non-Stellar Tokens via Bridge ────────────────────────────
+    /// token → i128 balance of bridged tokens held in contract
+    BridgedTokenBalance(Address),
+    /// token → TokenBridgeMetadata containing bridge information
+    TokenBridgeMetadata(Address),
+    /// token → i128 oracle price in basis points (e.g., 10_000 = 1:1 parity)
+    BridgeTokenPrice(Address),
+    // ── Issue #1076: Token Swap on Repayment Mismatch ──────────────────────────
+    /// loan_id → TokenSwapConfig for the loan's allowed swap tokens
+    LoanTokenSwapConfig(u64),
+    /// DEX contract address for token swaps
+    DexContractAddress,
+    // ── Issue #1077: Dynamic Yield Based on Token Liquidity ───────────────────
+    /// token → u32 liquidity tier (0-3, where 0 = most liquid, 3 = least liquid)
+    TokenLiquidityTier(Address),
+    /// Vec<i128> yield bonus BPS for each liquidity tier (indices 0-3)
+    LiquidityTierYieldBonuses,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -3125,3 +3145,98 @@ pub struct RecurringPaymentConfig {
     pub failure_count: u32,
     pub retry_count: u32,
 }
+
+// ── Issue #1074: Reentrancy Guard ─────────────────────────────────────────────
+
+/// Reentrancy guard state: 0 = unlocked, 1 = locked.
+/// Used to prevent malicious token fallbacks from calling back into the contract.
+pub const REENTRANCY_GUARD_UNLOCKED: u32 = 0;
+pub const REENTRANCY_GUARD_LOCKED: u32 = 1;
+
+// ── Issue #1075: Non-Stellar Tokens via Bridge ────────────────────────────────
+
+/// Metadata for a bridged token from another chain.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenBridgeMetadata {
+    /// The token address on this chain
+    pub token_address: Address,
+    /// Bridge contract address that handles the token
+    pub bridge_contract: Address,
+    /// Source token address on the origin chain
+    pub source_token_address: Address,
+    /// Origin chain ID (0 = native chain, >0 = external chain)
+    pub source_chain_id: u32,
+    /// Price per token relative to primary token (1.0 = 1:1), in basis points
+    pub price_bps: i128,
+    /// Timestamp when the price was last updated
+    pub price_updated_at: u64,
+    /// Whether this token is currently enabled for lending/borrowing
+    pub enabled: bool,
+    /// Maximum total balance allowed to be bridged (in stroops), 0 = unlimited
+    pub max_balance_cap: i128,
+}
+
+// ── Issue #1076: Token Swap on Repayment Mismatch ────────────────────────────
+
+/// Configuration for token swaps allowed during loan repayment.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenSwapConfig {
+    /// Loan ID this configuration applies to
+    pub loan_id: u64,
+    /// Primary loan token (the token loan was disbursed in)
+    pub primary_token: Address,
+    /// Alternative tokens the borrower is allowed to repay with
+    pub allowed_swap_tokens: Vec<Address>,
+    /// DEX contract address for performing swaps
+    pub dex_contract: Address,
+    /// Maximum slippage allowed in basis points (500 = 5%)
+    pub max_slippage_bps: i128,
+    /// Whether swaps are enabled for this loan
+    pub swaps_enabled: bool,
+    /// Timestamp when swap configuration was created
+    pub created_at: u64,
+}
+
+// ── Issue #1077: Dynamic Yield Based on Token Liquidity ───────────────────────
+
+/// Liquidity tier for a token, ranging from most liquid (0) to least liquid (3).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum LiquidityTier {
+    /// Highly liquid tokens (e.g., XLM, USDC) - tier 0
+    HighLiquidity = 0,
+    /// Medium-high liquidity tokens - tier 1
+    MediumHighLiquidity = 1,
+    /// Medium-low liquidity tokens - tier 2
+    MediumLowLiquidity = 2,
+    /// Low liquidity tokens - tier 3
+    LowLiquidity = 3,
+}
+
+impl LiquidityTier {
+    /// Convert from u32 to LiquidityTier
+    pub fn from_tier(tier: u32) -> Option<Self> {
+        match tier {
+            0 => Some(LiquidityTier::HighLiquidity),
+            1 => Some(LiquidityTier::MediumHighLiquidity),
+            2 => Some(LiquidityTier::MediumLowLiquidity),
+            3 => Some(LiquidityTier::LowLiquidity),
+            _ => None,
+        }
+    }
+
+    /// Convert LiquidityTier to u32
+    pub fn to_tier(&self) -> u32 {
+        *self as u32
+    }
+}
+
+/// Default yield bonus applied based on liquidity tier, in basis points.
+/// Tier 0 (high liquidity): 0 bps bonus (baseline 2%)
+/// Tier 1 (medium-high): 50 bps bonus (2.5%)
+/// Tier 2 (medium-low): 150 bps bonus (3.5%)
+/// Tier 3 (low liquidity): 350 bps bonus (5.5%)
+pub const DEFAULT_LIQUIDITY_TIER_BONUSES: [i128; 4] = [0, 50, 150, 350];
