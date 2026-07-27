@@ -1,0 +1,99 @@
+# Prometheus Configuration for QuorumCredit Protocol
+# Save as: /etc/prometheus/prometheus.yml
+# Reload: curl -X POST http://localhost:9090/-/reload
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'quorum-credit-monitor'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 'localhost:9093'
+
+# Load rule files
+rule_files:
+  - '/etc/prometheus/alerts.yml'
+  - '/etc/prometheus/dashboards.yml'
+
+scrape_configs:
+  # QuorumCredit Indexer - Event Stream & Metrics
+  - job_name: 'quorum-credit-indexer'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: '/metrics'
+    scheme: http
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'indexer'
+          component: 'core'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+    metric_relabel_configs:
+      # Keep only QuorumCredit metrics
+      - source_labels: [__name__]
+        regex: 'qc_.+'
+        action: keep
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'monitoring'
+
+  # Node Exporter - Infrastructure Metrics (if monitoring the indexer host)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          service: 'host'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'node_memory_MemAvailable|node_memory_MemTotal|node_cpu_seconds_total|node_disk_io_time_seconds_total|node_network_receive_bytes_total|node_network_transmit_bytes_total'
+        action: keep
+
+  # Stellar RPC Endpoint Health (if self-hosted)
+  - job_name: 'stellar-rpc'
+    scrape_interval: 30s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['stellar-rpc.yourdomain.com:8080']
+        labels:
+          service: 'stellar'
+          component: 'rpc'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'stellar_.*'
+        action: keep
+
+  # SQLite Database Metrics (if exporting from indexer)
+  - job_name: 'quorum-credit-db'
+    scrape_interval: 60s
+    metrics_path: '/db-metrics'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'database'
+          type: 'sqlite'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'qc_db_.+'
+        action: keep
+
+# Service discovery (optional - for Kubernetes)
+# - job_name: 'quorum-credit-k8s'
+#   kubernetes_sd_configs:
+#     - role: pod
+#   relabel_configs:
+#     - source_labels: [__meta_kubernetes_namespace]
+#       target_label: namespace
+#     - source_labels: [__meta_kubernetes_pod_name]
+#       target_label: pod

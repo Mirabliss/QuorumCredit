@@ -3,9 +3,7 @@ use crate::types::{
     Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
     COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS, MILESTONE_25_PCT_PERMILLE,
     MILESTONE_50_DISCOUNT_BPS, MILESTONE_50_PCT_PERMILLE, MILESTONE_75_DISCOUNT_BPS,
-    MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75,
-    SECS_PER_DAY, MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
-    BPS_DENOMINATOR,
+    MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75, MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
 };
 use soroban_sdk::{token, Address, Env, String, Symbol, Vec};
 
@@ -322,7 +320,7 @@ pub fn require_admin_approval_for_operation(
     admin_signers: &Vec<Address>,
     operation_type: crate::types::AdminOperationType,
 ) {
-    use crate::types::{AdminOperationType, DataKey};
+    
     
     let cfg = config(env);
     
@@ -501,15 +499,15 @@ pub fn get_borrower_list_page(env: &Env, offset: u32, limit: u32) -> (Vec<Addres
     paginate_vec(env, &list, offset, limit)
 }
 
-pub fn primary_token(env: &Env) -> token::Client {
+pub fn primary_token(env: &Env) -> token::Client<'_> {
     token::Client::new(env, &config(env).token)
 }
 
-pub fn token(env: &Env) -> token::Client {
+pub fn token(env: &Env) -> token::Client<'_> {
     primary_token(env)
 }
 
-pub fn token_client(env: &Env) -> token::Client {
+pub fn token_client(env: &Env) -> token::Client<'_> {
     primary_token(env)
 }
 

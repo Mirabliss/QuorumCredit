@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    add_slash_balance, config, get_active_loan_record, get_latest_loan_record, has_active_loan,
+    config, get_active_loan_record, get_latest_loan_record, has_active_loan,
     is_zero_address, require_admin_approval, require_governance_participant, require_not_paused,
 };
 use crate::types::{
@@ -571,7 +571,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
     // Calculate total stake backing this borrower (used for loan-size scaling)
-    let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+    let _total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
 
     // Calculate effective slash basis points based on default count (graduated penalties).
     // Note: the dynamic-health calculation is intentionally not used here —

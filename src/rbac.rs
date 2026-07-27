@@ -180,7 +180,7 @@ pub fn migrate_legacy_admins_to_superadmin(env: &Env) {
 
     env.events().publish(
         ("rbac", "legacy_migration_complete"),
-        (cfg.admins.len()),
+        cfg.admins.len() ,
     );
 }
 

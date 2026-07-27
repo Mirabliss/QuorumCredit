@@ -8,6 +8,7 @@ import { Bridge } from "./bridge/bridge.js";
 import { attachLoanSocketServer } from "./ws/loanSocketServer.js";
 import { attachMetricsWsServer } from "./ws/metricsWsServer.js";
 import { handleHttpRequest } from "./http/routes.js";
+import * as insuranceMarketplace from "./insurance-marketplace.js";
 
 export function buildBus(redisUrl: string | undefined): PubSubBus {
   if (redisUrl) return new RedisBus(redisUrl);
@@ -19,6 +20,9 @@ export function buildBus(redisUrl: string | undefined): PubSubBus {
 }
 
 async function main(): Promise<void> {
+  // Issue #1174: Initialize insurance marketplace with default providers and products
+  insuranceMarketplace.initializeDefaults();
+
   const config = loadConfig();
   const bus = buildBus(config.redisUrl);
   const store = new EventStore(config.indexerDbPath);

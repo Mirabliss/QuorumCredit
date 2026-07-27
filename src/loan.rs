@@ -8,11 +8,11 @@ use crate::helpers::{
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
     BorrowerDynamicRate, DataKey, DynamicRateConfig, EscrowStatus, ForbearanceRecord,
-    ForbearanceStatus, LoanRecord, LoanStatus, LoanStatusEx, RefinanceRecord, SlashRecord,
-    VouchRecord, VoucherStats, YieldDistributionEntry, PaymentRecord, BPS_DENOMINATOR,
-    DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS, MAX_FORBEARANCE_PERIODS,
-    REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
-    SECS_PER_DAY,
+    ForbearanceStatus, LoanRecord, LoanStatus, LoanStatusEx, RefinanceQuote, RefinanceRecord,
+    RefinanceStats, SlashRecord, VouchRecord, VoucherStats, YieldDistributionEntry, PaymentRecord,
+    BPS_DENOMINATOR, DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS,
+    MAX_FORBEARANCE_PERIODS, REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD,
+    DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE, SECS_PER_DAY,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -185,7 +185,7 @@ pub fn request_loan(
     }
 
     let now = env.ledger().timestamp();
-    let loan_id = next_loan_id(&env);
+    let _loan_id = next_loan_id(&env);
 
     // ── Credit score tier rewards ────────────────────────────────────────────
     // Apply tier-based yield bonus to base yield rate (Issue #866)
@@ -215,7 +215,7 @@ pub fn request_loan(
         });
     }
 
-    let deadline = now + cfg.loan_duration;
+    let _deadline = now + cfg.loan_duration;
     let loan_id = next_loan_id(&env);
     let total_yield = amount * cfg.yield_bps / 10_000;
 
@@ -464,7 +464,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         .and_then(|v| v.checked_add(loan.accrued_interest))
         .expect("total_owed_final overflow");
 
-    let fully_repaid = loan.amount_repaid >= total_owed_final;
+    let _fully_repaid = loan.amount_repaid >= total_owed_final;
 
     let now = env.ledger().timestamp();
     
@@ -549,7 +549,12 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 0
             };
 
-            let payout = v.stake + vouch_yield + penalty_share;
+            // Issue #1077: Add liquidity-tier yield bonus on top of the locked-in yield.
+            // Illiquid tokens earn a higher bonus to compensate for risk.
+            let tier_bonus_bps = crate::bridge::liquidity_tier_bonus_bps(&env, &loan.token_address);
+            let tier_yield_extra = v.stake * tier_bonus_bps / BPS_DENOMINATOR;
+
+            let payout = v.stake + vouch_yield + penalty_share + tier_yield_extra;
 
             if payout > 0 {
                 token.transfer(&env.current_contract_address(), &v.voucher, &payout);
@@ -566,7 +571,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                     total_slashed: 0,
                 });
             stats.successful_vouches += 1;
-            stats.total_yield_earned += vouch_yield;
+            stats.total_yield_earned += vouch_yield + tier_yield_extra;
             env.storage()
                 .persistent()
                 .set(&DataKey::VoucherStats(v.voucher.clone()), &stats);
@@ -1108,6 +1113,22 @@ pub fn refinance_loan(
         .persistent()
         .set(&DataKey::RefinanceRecord(new_loan_id), &refinance_record);
 
+    // Track aggregate refinance statistics and customer savings.
+    let annual_interest_old = outstanding.saturating_mul(old_rate_bps) / BPS_DENOMINATOR;
+    let annual_interest_new = outstanding.saturating_mul(new_yield_bps) / BPS_DENOMINATOR;
+    let estimated_savings = annual_interest_old - annual_interest_new;
+    let mut stats = get_refinance_stats(env.clone());
+    stats.total_refinances += 1;
+    stats.total_rate_reduction_bps = stats
+        .total_rate_reduction_bps
+        .saturating_add(old_rate_bps - new_yield_bps);
+    stats.total_estimated_savings = stats
+        .total_estimated_savings
+        .saturating_add(estimated_savings);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RefinanceStats, &stats);
+
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("refinance")),
         (
@@ -1128,6 +1149,93 @@ pub fn get_refinance_record(env: Env, loan_id: u64) -> Option<RefinanceRecord> {
     env.storage()
         .persistent()
         .get(&DataKey::RefinanceRecord(loan_id))
+}
+
+// ── Issue #1166: Refinance rate shopping ─────────────────────────────────────
+
+/// Produce a non-binding quote for refinancing `borrower`'s active loan into
+/// `new_amount` of `new_token`, without mutating any state. Lets a borrower
+/// "shop" for better rates before committing via `refinance_loan`.
+pub fn refinance_quote(
+    env: Env,
+    borrower: Address,
+    new_amount: i128,
+    new_token: Address,
+) -> Result<RefinanceQuote, ContractError> {
+    let old_loan = get_active_loan_record(&env, &borrower)?;
+    let now = env.ledger().timestamp();
+
+    let _ = require_allowed_token(&env, &new_token)?;
+
+    let total_owed = old_loan
+        .amount
+        .checked_add(old_loan.total_yield)
+        .ok_or(ContractError::ArithmeticError)?;
+    let outstanding = total_owed
+        .checked_sub(old_loan.amount_repaid)
+        .ok_or(ContractError::ArithmeticError)?;
+
+    if outstanding <= 0 {
+        return Err(ContractError::RefinanceNoOutstanding);
+    }
+
+    let cfg = config(&env);
+
+    let old_rate_bps = if old_loan.amount > 0 {
+        old_loan.total_yield * BPS_DENOMINATOR / old_loan.amount
+    } else {
+        cfg.yield_bps
+    };
+    let new_rate_bps =
+        crate::credit_score::apply_tier_rewards_to_yield(&env, &borrower, cfg.yield_bps);
+
+    let annual_interest_old = outstanding.saturating_mul(old_rate_bps) / BPS_DENOMINATOR;
+    let annual_interest_new = outstanding.saturating_mul(new_rate_bps) / BPS_DENOMINATOR;
+    let estimated_annual_savings = annual_interest_old - annual_interest_new;
+
+    let protocol_fee_bps: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ProtocolFeeBps)
+        .unwrap_or(0);
+    let refinance_fee = new_amount.saturating_mul(protocol_fee_bps as i128) / BPS_DENOMINATOR;
+
+    let breakeven_days = if estimated_annual_savings > 0 {
+        let daily_savings = (estimated_annual_savings / 365).max(1);
+        Some((refinance_fee / daily_savings) as u64)
+    } else {
+        None
+    };
+
+    let eligible = new_rate_bps < old_rate_bps
+        && now < old_loan.deadline
+        && new_amount >= outstanding
+        && new_amount >= cfg.min_loan_amount;
+
+    Ok(RefinanceQuote {
+        borrower,
+        old_loan_id: old_loan.id,
+        outstanding,
+        old_rate_bps,
+        new_rate_bps,
+        eligible,
+        estimated_annual_savings,
+        refinance_fee,
+        breakeven_days,
+    })
+}
+
+/// Global aggregate refinance statistics: how many refinances have gone
+/// through and the cumulative estimated customer savings they produced.
+pub fn get_refinance_stats(env: Env) -> RefinanceStats {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RefinanceStats)
+        .unwrap_or(RefinanceStats {
+            total_refinances: 0,
+            total_rate_reduction_bps: 0,
+            total_estimated_savings: 0,
+        })
 }
 
 pub fn deposit_collateral(
@@ -1327,7 +1435,7 @@ pub fn defer_payment(env: Env, borrower: Address) -> Result<(), ContractError> {
     Err(ContractError::InvalidStateTransition)
 }
 
-pub fn check_acceleration(env: Env, _borrower: Address) -> Result<(), ContractError> {
+pub fn check_acceleration(_env: Env, _borrower: Address) -> Result<(), ContractError> {
     Err(ContractError::InvalidStateTransition)
 }
 
@@ -1547,7 +1655,7 @@ pub fn get_prepayment_bonus_bps(env: &Env) -> u32 {
 
 /// Calculate and apply the prepayment bonus for early repayment.
 /// Returns the bonus amount awarded (0 if not eligible).
-pub fn apply_prepayment_bonus(env: &Env, borrower: &Address, loan: &LoanRecord) -> i128 {
+pub fn apply_prepayment_bonus(env: &Env, _borrower: &Address, loan: &LoanRecord) -> i128 {
     let now = env.ledger().timestamp();
     if now >= loan.deadline {
         return 0;

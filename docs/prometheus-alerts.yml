@@ -1,0 +1,302 @@
+# Prometheus Alerting Rules for QuorumCredit Protocol
+# Save as: /etc/prometheus/alerts.yml
+# Reload: curl -X POST http://localhost:9090/-/reload
+
+groups:
+  - name: quorum_credit_alerts
+    interval: 30s
+    rules:
+      # ============================================================================
+      # CRITICAL ALERTS - Page On-Call Immediately
+      # ============================================================================
+
+      - alert: IndexerDown
+        expr: up{job="quorum-credit-indexer"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: indexer
+          team: ops
+        annotations:
+          summary: "QuorumCredit indexer is unreachable"
+          description: "The indexer at {{ $labels.instance }} has not responded to scrape attempts for 2 minutes. Metrics collection is halted."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/indexer-down"
+          dashboard_url: "https://grafana.yourdomain.com/d/qc-indexer-health"
+
+      - alert: IndexerProcessDown
+        expr: qc_indexer_ledger_height == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Indexer process not processing ledgers"
+          description: "Ledger height has been 0 for 5 minutes. The indexer process may have crashed or be stuck."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/indexer-stalled"
+
+      - alert: DataLossPotential
+        expr: increase(qc_indexer_gap_detected_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Critical: Retention window gap detected"
+          description: "A ledger retention window gap was detected {{ $value }} time(s) in the last 10 minutes. This may indicate data loss risk."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/data-loss-risk"
+
+      - alert: HighErrorRate
+        expr: rate(qc_indexer_errors_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Indexer error rate critically high (>50%)"
+          description: "Error rate is {{ $value | humanizePercentage }} for the last 5 minutes. Most requests are failing."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/high-error-rate"
+
+      # ============================================================================
+      # HIGH SEVERITY ALERTS - Investigate Within 15 Minutes
+      # ============================================================================
+
+      - alert: LedgerProcessingSlowdown
+        expr: rate(qc_indexer_events_total[5m]) < 100
+        for: 15m
+        labels:
+          severity: high
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Indexer event processing rate below threshold"
+          description: "Only {{ $value | humanize }} events/minute are being processed (expected ~200). Network or RPC issues suspected."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/slow-processing"
+
+      - alert: LedgerReorgDetected
+        expr: increase(qc_indexer_reorgs_detected_total[10m]) > 2
+        for: 2m
+        labels:
+          severity: high
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Multiple ledger reorgs detected"
+          description: "{{ $value }} ledger reorgs detected in the last 10 minutes. Soroban consensus instability suspected."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/ledger-reorg"
+
+      - alert: SlashEventSpike
+        expr: increase(qc_slash_events_total[1h]) > 20
+        for: 5m
+        labels:
+          severity: high
+          service: protocol
+          team: protocol
+        annotations:
+          summary: "Unusual number of slash events in 1 hour"
+          description: "{{ $value }} slash events occurred in the last hour (normal: ~5-10). Possible attack or widespread defaults."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/slash-spike"
+
+      - alert: ActiveLoanRatioUnusual
+        expr: (qc_active_loans > 1000) and (qc_active_loans / (qc_loan_count_total - qc_active_loans) > 2)
+        for: 10m
+        labels:
+          severity: high
+          service: protocol
+          team: protocol
+        annotations:
+          summary: "Active loans 2x higher than repaid loans"
+          description: "Active loans: {{ $value | humanize }}. Possible systemic default risk or low repayment rates."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/high-utilization"
+
+      - alert: IndexerDatabaseSizeGrowing
+        expr: rate(qc_db_size_bytes[1h]) > 1_073_741_824
+        for: 30m
+        labels:
+          severity: high
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Database growing faster than expected (>1GB/hour)"
+          description: "Database growth rate: {{ $value | humanize }}B/hour. Possible excessive logging or data retention issue."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/db-size"
+
+      # ============================================================================
+      # MEDIUM SEVERITY ALERTS - Investigate Within 1 Hour
+      # ============================================================================
+
+      - alert: ModerateErrorRate
+        expr: rate(qc_indexer_errors_total[5m]) > 0.1 and rate(qc_indexer_errors_total[5m]) <= 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Indexer error rate elevated (10-50%)"
+          description: "Error rate is {{ $value | humanizePercentage }} for the last 5 minutes."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/moderate-errors"
+
+      - alert: BackfillRunning
+        expr: increase(qc_indexer_backfill_events_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Indexer is running backfill (recovery mode)"
+          description: "Backfill detected. This is normal after restarts but should complete within 30 minutes."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/backfill-running"
+
+      - alert: HighLoanVolatility
+        expr: stddev_over_time(qc_active_loans[1h]) > avg_over_time(qc_active_loans[1h]) * 0.3
+        for: 15m
+        labels:
+          severity: warning
+          service: protocol
+          team: protocol
+        annotations:
+          summary: "Active loans showing high volatility"
+          description: "Active loan count is fluctuating significantly. Possible rapid defaults or bulk repayments."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/loan-volatility"
+
+      - alert: VouchCountDecreasing
+        expr: increase(qc_vouch_count[1h]) < 0
+        for: 30m
+        labels:
+          severity: warning
+          service: protocol
+          team: protocol
+        annotations:
+          summary: "Total active vouches decreasing"
+          description: "Vouch count decreased by {{ $value | humanize }} in the last hour. May indicate reduced voucher participation."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/vouch-decline"
+
+      - alert: PrometheusHighMemory
+        expr: process_resident_memory_bytes{job="prometheus"} > 1_610_612_736
+        for: 15m
+        labels:
+          severity: warning
+          service: monitoring
+          team: ops
+        annotations:
+          summary: "Prometheus consuming >1.5GB memory"
+          description: "Prometheus memory usage is {{ $value | humanize1024 }}. May need to increase retention or resources."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/prometheus-memory"
+
+      # ============================================================================
+      # INFORMATIONAL ALERTS - Monitor and Log
+      # ============================================================================
+
+      - alert: LowErrorRateBaseline
+        expr: rate(qc_indexer_errors_total[5m]) > 0 and rate(qc_indexer_errors_total[5m]) <= 0.1
+        for: 30m
+        labels:
+          severity: info
+          service: indexer
+          team: ops
+        annotations:
+          summary: "Low-level errors detected"
+          description: "Error rate is {{ $value | humanizePercentage }}. Errors occurring but below threshold."
+
+      - alert: NoLoansCreatedRecently
+        expr: increase(qc_loan_count_total[6h]) == 0
+        for: 10m
+        labels:
+          severity: info
+          service: protocol
+          team: protocol
+        annotations:
+          summary: "No new loans created in 6 hours"
+          description: "No loan creation activity detected recently. This may be normal low-activity period."
+
+      - alert: VouchThresholdFrequentlyMissed
+        expr: (qc_loan_count_total - qc_active_loans) / qc_loan_count_total < 0.7
+        for: 2h
+        labels:
+          severity: info
+          service: protocol
+          team: protocol
+        annotations:
+          summary: "Only 70% of requested loans are meeting vouch thresholds"
+          description: "Loan approval rate: {{ $value | humanizePercentage }}. May indicate interest from new vouchers is needed."
+
+      # ============================================================================
+      # SLA TRACKING - No Alert, But Monitored
+      # ============================================================================
+
+      - alert: DailyMetricsGap
+        expr: time() - qc_indexer_ledger_height * 5 > 86400
+        for: 1m
+        labels:
+          severity: info
+          service: indexer
+          team: ops
+        annotations:
+          summary: "[SLA-INFO] Indexer >24h behind current ledger"
+          description: "Indexer lag: {{ $value | humanizeDuration }}. Last ledger: {{ $value | humanize }}."
+
+      - alert: WeeklyUptime
+        expr: (count(up{job="quorum-credit-indexer"} == 1) / (86400 / 15)) < 0.99
+        for: 1m
+        labels:
+          severity: info
+          service: monitoring
+          team: ops
+        annotations:
+          summary: "[SLA-INFO] Weekly uptime < 99%"
+          description: "This week's uptime: {{ $value | humanizePercentage }}. Target: 99.9%"
+
+  # ============================================================================
+  # INFRASTRUCTURE HEALTH ALERTS (Optional - If Using Node Exporter)
+  # ============================================================================
+
+  - name: infrastructure_alerts
+    interval: 30s
+    rules:
+      - alert: HighDiskUsage
+        expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes) < 0.15
+        for: 10m
+        labels:
+          severity: high
+          service: host
+          team: ops
+        annotations:
+          summary: "Disk usage >85%"
+          description: "Disk {{ $labels.device }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} free space."
+
+      - alert: HighCPUUsage
+        expr: rate(node_cpu_seconds_total{mode!="idle"}[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+          team: ops
+        annotations:
+          summary: "CPU usage >80%"
+          description: "CPU usage on {{ $labels.instance }}: {{ $value | humanizePercentage }}"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+          team: ops
+        annotations:
+          summary: "Memory usage >85%"
+          description: "Memory usage on {{ $labels.instance }}: {{ $value | humanizePercentage }}"
+
+      - alert: NetworkErrorsDetected
+        expr: rate(node_network_receive_errs_total[5m]) > 0 or rate(node_network_transmit_errs_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+          team: ops
+        annotations:
+          summary: "Network errors on {{ $labels.device }}"
+          description: "Interface {{ $labels.device }} on {{ $labels.instance }} has errors"

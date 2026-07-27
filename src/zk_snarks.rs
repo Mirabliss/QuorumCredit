@@ -3,7 +3,7 @@ use crate::types::{
     ConfidentialCommitment, DataKey, ZkProof, ZkProofRecord, PROOF_TYPE_LOAN_REQUEST,
     PROOF_TYPE_VOUCH,
 };
-use soroban_sdk::{token, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{Address, Bytes, BytesN, Env, Vec};
 use sha3::{Digest, Sha3_256};
 
 const MAX_CONFIDENTIAL_STAKE: i128 = 1_000_000_000;
@@ -41,7 +41,7 @@ fn hash_bool(value: bool) -> [u8; 32] {
 }
 
 fn bound_hash_bytes(env: &Env, proof_type: u32, voucher: &Address, borrower: &Address, token: &Address, stake_amount: i128) -> BytesN<32> {
-    let mut payload = [0u8; 0];
+    let _payload = [0u8; 0];
     let mut hasher = Sha3_256::new();
     hasher.update(&proof_type.to_be_bytes());
     hasher.update(&hash_address(voucher));

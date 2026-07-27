@@ -1,10 +1,9 @@
 use crate::errors::ContractError;
-use crate::helpers::config;
 use crate::types::{
-    CreditFactors, CreditScore, CreditScoreConfig, CreditTier, DataKey, TierRewards,
+    CreditScore, CreditScoreConfig, CreditTier, DataKey, TierRewards,
     DEFAULT_CREDIT_SCORE_CONFIG, LoanRecord, LoanStatus,
 };
-use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 /// Get the credit score configuration, or default if not set.
 pub fn get_credit_score_config(env: &Env) -> CreditScoreConfig {

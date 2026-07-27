@@ -103,3 +103,80 @@ export interface BroadcastEvent {
 }
 
 export const EVENTS_CHANNEL = "qc:events";
+
+// ---------------------------------------------------------------------------
+// Issue #1174: Loan Insurance Marketplace Types
+// ---------------------------------------------------------------------------
+
+export interface InsuranceProvider {
+  id: string;
+  name: string;
+  apiEndpoint: string;
+  apiKey?: string; // For internal use
+  active: boolean;
+  supportedTokens: string[];
+  minLoanAmount: number;
+  maxLoanAmount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface InsuranceProduct {
+  id: string;
+  providerId: string;
+  name: string;
+  description: string;
+  coveragePercentage: number; // 0-100%, amount of loan covered
+  premiumBps: number; // Premium in basis points
+  maxClaimAmount: number; // Max payout in stroops
+  claimsProcessingDays: number;
+  active: boolean;
+  createdAt: number;
+}
+
+export interface InsuranceQuote {
+  id: string;
+  loanId: number;
+  borrower: string;
+  loanAmount: number;
+  productId: string;
+  providerId: string;
+  providerName: string;
+  productName: string;
+  coverageAmount: number; // Loan amount × (coveragePercentage / 100)
+  premiumAmount: number; // Loan amount × (premiumBps / 10000)
+  premiumBpsAnnual: number; // Annual premium in basis points
+  expiresAt: number; // Quote validity timestamp
+  quotedAt: number;
+}
+
+export interface InsuranceClaim {
+  id: string;
+  loanId: number;
+  borrower: string;
+  providerId: string;
+  productId: string;
+  claimAmount: number;
+  status: "pending" | "approved" | "rejected" | "paid";
+  submittedAt: number;
+  decidedAt?: number;
+  paidAt?: number;
+  rejectionReason?: string;
+}
+
+export interface InsuranceMarketplaceStats {
+  totalProviders: number;
+  activeProducts: number;
+  quotesGenerated: number;
+  claimsSubmitted: number;
+  claimsApproved: number;
+  totalCoveragePremiums: number; // Total premiums collected
+  totalClaimsPaid: number;
+  averagePremiumBps: number;
+  productPerformance: {
+    productId: string;
+    claimsApprovalRate: number;
+    averageClaimProcessingDays: number;
+  }[];
+  timestamp: number;
+}

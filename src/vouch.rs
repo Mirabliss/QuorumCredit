@@ -2,14 +2,14 @@ extern crate alloc;
 
 use crate::errors::ContractError;
 use crate::helpers::{
-    config, has_active_loan, paginate_vec, require_admin_approval, require_allowed_token,
-    require_not_paused, require_not_thawing, require_reads_allowed, require_positive_amount,
+    has_active_loan, paginate_vec, require_admin_approval, require_allowed_token, require_not_thawing, require_reads_allowed, require_positive_amount,
 };
 use crate::types::{
-    BatchVouchResult, BridgeRecord, DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord,
-    VouchMerkleRoot, MAX_HOT_VOUCH_HISTORY_ENTRIES, MAX_WITHDRAWAL_QUEUE_SIZE,
-    PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS, BPS_DENOMINATOR,
-    VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES,
+    BatchVouchResult, BorrowerExposure, BridgeRecord, ChainExposure, DataKey, PortfolioRiskReport,
+    PortfolioSnapshot, QueuedWithdrawal, StagnantVouch, TokenExposure, VouchHistoryEntry,
+    VouchRecord, VouchMerkleRoot, VouchSplitRecord, MAX_HOT_VOUCH_HISTORY_ENTRIES,
+    MAX_WITHDRAWAL_QUEUE_SIZE, PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS,
+    BPS_DENOMINATOR, SECS_PER_DAY, VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES,
 };
 use soroban_sdk::{symbol_short, token, Address, BytesN, Env, String, Vec};
 
@@ -338,6 +338,26 @@ fn commit_vouch(
         },
     );
 
+    // Issue #1179: Log audit trail event for vouch creation
+    crate::audit::log_vouch_audit_event(
+        env,
+        &voucher,
+        &borrower,
+        &token,
+        crate::types::VouchAuditEventType::Created,
+        stake,
+        None,
+        None,
+    ).ok(); // Continue even if audit logging fails
+
+    // Issue #1177: Initialize maturity tracking for tenure-based interest bonuses
+    crate::maturity::initialize_vouch_maturity(
+        env,
+        &voucher,
+        &borrower,
+        &token,
+    ).ok(); // Continue even if maturity tracking fails
+
     env.storage().persistent().set(
         &DataKey::LastVouchTimestamp(voucher.clone()),
         &timestamp,
@@ -511,8 +531,20 @@ pub fn increase_stake(
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("increase")),
-        (voucher, borrower, additional),
+        (voucher.clone(), borrower.clone(), additional),
     );
+
+    // Issue #1179: Log audit trail event for stake increase
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &voucher,
+        &borrower,
+        &token,
+        crate::types::VouchAuditEventType::Increased,
+        additional,
+        None,
+        None,
+    ).ok();
 
     Ok(())
 }
@@ -592,8 +624,20 @@ pub fn decrease_stake(
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("decrease")),
-        (voucher, borrower, amount),
+        (voucher.clone(), borrower.clone(), amount),
     );
+
+    // Issue #1179: Log audit trail event for stake decrease
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &voucher,
+        &borrower,
+        &token,
+        crate::types::VouchAuditEventType::Decreased,
+        amount,
+        None,
+        None,
+    ).ok();
 
     Ok(())
 }
@@ -653,8 +697,20 @@ pub fn withdraw_vouch(
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("withdraw")),
-        (voucher, borrower, vouch_stake),
+        (voucher.clone(), borrower.clone(), vouch_stake),
     );
+
+    // Issue #1179: Log audit trail event for vouch withdrawal
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &voucher,
+        &borrower,
+        &vouch_token,
+        crate::types::VouchAuditEventType::Withdrawn,
+        vouch_stake,
+        None,
+        None,
+    ).ok();
 
     Ok(())
 }
@@ -1583,7 +1639,7 @@ pub fn vouch_reputation_weight(env: &Env, voucher: &Address) -> i128 {
 
     let slashed: u32 = stats.as_ref().map(|s| s.total_vouches_slashed).unwrap_or(0);
     let total_yield_earned: i128 = stats.as_ref().map(|s| s.total_yield_earned).unwrap_or(0);
-    let successful_vouches: u32 = stats.as_ref().map(|s| s.successful_vouches).unwrap_or(0);
+    let _successful_vouches: u32 = stats.as_ref().map(|s| s.successful_vouches).unwrap_or(0);
 
     // ── Minimum-stake floor ──────────────────────────────────────────────
     // If the voucher has not earned at least SYBIL_MIN_STAKE_FOR_REP in aggregate yield,
@@ -1667,7 +1723,7 @@ pub fn invalidate_weighted_stake_cache(env: &Env, borrower: &Address, token: &Ad
 
 /// Invalidates all cached weighted stake values for a borrower (across all tokens).
 /// Used when vouch records for a borrower are completely cleared (e.g., after loan repayment).
-pub fn invalidate_all_stake_caches_for_borrower(env: &Env, borrower: &Address) {
+pub fn invalidate_all_stake_caches_for_borrower(_env: &Env, _borrower: &Address) {
     // Note: In Soroban, there's no efficient way to enumerate and delete all cache entries for a borrower
     // across all tokens. The cache is self-healing: it recomputes on miss if the vouch list has changed.
     // This is a no-op that documents the intent; the invalidation happens implicitly when vouches
@@ -1974,4 +2030,538 @@ pub fn vouch_with_sector(
     _sector: soroban_sdk::String,
 ) -> Result<(), ContractError> {
     Ok(())
+}
+
+// ── Vouch splitting (Issue #1167) ─────────────────────────────────────────────
+
+/// Minimum stake, in stroops, that must remain on both sides of a split.
+/// Mirrors the 100 USDC-equivalent floor used for stake amounts under the
+/// protocol's 7-decimal convention (1 unit = 10_000_000 stroops).
+pub const MIN_SPLIT_STAKE: i128 = 100 * 10_000_000;
+
+/// Split an existing vouch into two independent vouches for the same
+/// borrower: the original vouch is reduced by `amount_to_split`, and a new
+/// vouch owned by `new_voucher` is created for that amount, inheriting the
+/// original's token, expiry and chain terms. This allows partial reduction
+/// of a position (e.g. handing part of a stake off to another party)
+/// without a full withdrawal.
+///
+/// This codebase identifies a vouch by its `(voucher, borrower)` pair
+/// rather than a numeric ID, so `new_voucher` (the return value) doubles as
+/// the new vouch's identifier.
+pub fn split_vouch(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    new_voucher: Address,
+    amount_to_split: i128,
+) -> Result<Address, ContractError> {
+    voucher.require_auth();
+    require_not_thawing(&env)?;
+    require_positive_amount(&env, amount_to_split)?;
+
+    if voucher == new_voucher {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let mut vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .ok_or(ContractError::NoVouchesForBorrower)?;
+
+    let idx = vouches
+        .iter()
+        .position(|v| v.voucher == voucher)
+        .ok_or(ContractError::VoucherNotFound)? as u32;
+
+    let original = vouches.get(idx).unwrap();
+
+    if amount_to_split >= original.stake {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    let remaining = original
+        .stake
+        .checked_sub(amount_to_split)
+        .ok_or(ContractError::ArithmeticError)?;
+
+    if remaining < MIN_SPLIT_STAKE || amount_to_split < MIN_SPLIT_STAKE {
+        return Err(ContractError::SplitBelowMinimum);
+    }
+
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
+
+    for v in vouches.iter() {
+        if v.voucher == new_voucher && v.token == original.token {
+            return Err(ContractError::DuplicateVouch);
+        }
+    }
+
+    let now = env.ledger().timestamp();
+
+    let mut updated_original = original.clone();
+    updated_original.stake = remaining;
+    vouches.set(idx, updated_original);
+
+    let new_record = VouchRecord {
+        voucher: new_voucher.clone(),
+        stake: amount_to_split,
+        vouch_timestamp: now,
+        token: original.token.clone(),
+        expiry_timestamp: original.expiry_timestamp,
+        delegate: None,
+        chain_id: original.chain_id,
+    };
+    vouches.push_back(new_record);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    invalidate_weighted_stake_cache(&env, &borrower, &original.token);
+
+    let mut new_history: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherHistory(new_voucher.clone()))
+        .unwrap_or(Vec::new(&env));
+    if !new_history.iter().any(|b| b == borrower) {
+        new_history.push_back(borrower.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::VoucherHistory(new_voucher.clone()), &new_history);
+    }
+
+    let mut split_history: Vec<VouchSplitRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchSplitHistory(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+    split_history.push_back(VouchSplitRecord {
+        parent_voucher: voucher.clone(),
+        child_voucher: new_voucher.clone(),
+        borrower: borrower.clone(),
+        amount: amount_to_split,
+        split_at: now,
+    });
+    env.storage()
+        .persistent()
+        .set(&DataKey::VouchSplitHistory(borrower.clone()), &split_history);
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("split")),
+        (voucher, new_voucher.clone(), borrower, amount_to_split),
+    );
+
+    Ok(new_voucher)
+}
+
+/// Full split genealogy (every split ever performed) for a borrower's vouches.
+pub fn get_vouch_split_history(env: Env, borrower: Address) -> Vec<VouchSplitRecord> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VouchSplitHistory(borrower))
+        .unwrap_or(Vec::new(&env))
+}
+
+// ── Vouch rotation incentive program (Issue #1165) ────────────────────────────
+
+/// Minimum time, in seconds, a voucher must wait between rotations.
+pub const ROTATION_COOLDOWN_SECS: u64 = 14 * 24 * 60 * 60; // 14 days
+
+/// Minimum time, in seconds, between rotations to qualify as "quarterly"
+/// and earn the rotation bonus.
+pub const ROTATION_BONUS_INTERVAL_SECS: u64 = 90 * 24 * 60 * 60; // ~1 quarter
+
+/// Basis-point yield bonus awarded for rotating on (or after) a quarterly
+/// cadence. Stored per-voucher (`DataKey::RotationBonusBps`) for the yield
+/// distribution layer to apply.
+pub const ROTATION_BONUS_BPS: u32 = 500; // 5%
+
+/// A vouch is considered stagnant once this many days pass without a
+/// rotation — surfaced by `get_stagnant_vouches` as a recommendation.
+pub const STAGNANT_VOUCH_THRESHOLD_DAYS: u64 = 180;
+
+/// Move a voucher's entire stake for `old_borrower` to `new_borrower`.
+/// Rotation never incurs the protocol fee that would apply to an equivalent
+/// withdraw-and-re-vouch flow (there is none to waive at the vouch layer —
+/// this function simply never assesses one). Enforces a 14-day cooling off
+/// period between rotations, and records a 5% yield bonus
+/// (`DataKey::RotationBonusBps`) when the voucher rotates on a quarterly
+/// cadence or better.
+pub fn rotate_to_new_borrower(
+    env: Env,
+    voucher: Address,
+    old_borrower: Address,
+    new_borrower: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_thawing(&env)?;
+
+    if old_borrower == new_borrower {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let now = env.ledger().timestamp();
+
+    let last_rotation: Option<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LastRotationTimestamp(voucher.clone()));
+
+    if let Some(last) = last_rotation {
+        if now < last + ROTATION_COOLDOWN_SECS {
+            return Err(ContractError::RotationCooldownActive);
+        }
+    }
+
+    let mut old_vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(old_borrower.clone()))
+        .ok_or(ContractError::NoVouchesForBorrower)?;
+
+    let idx = old_vouches
+        .iter()
+        .position(|v| v.voucher == voucher)
+        .ok_or(ContractError::VoucherNotFound)? as u32;
+
+    if has_active_loan(&env, &old_borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
+
+    let vouch_rec = old_vouches.get(idx).unwrap();
+    let token = vouch_rec.token.clone();
+
+    let mut new_borrower_vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(new_borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    if new_borrower_vouches
+        .iter()
+        .any(|v| v.voucher == voucher && v.token == token)
+    {
+        return Err(ContractError::DuplicateVouch);
+    }
+
+    // Move the record: remove from old_borrower, append (with a fresh
+    // timestamp) under new_borrower.
+    old_vouches.remove(idx);
+    env.storage()
+        .persistent()
+        .set(&DataKey::Vouches(old_borrower.clone()), &old_vouches);
+    invalidate_weighted_stake_cache(&env, &old_borrower, &token);
+
+    let mut rotated = vouch_rec.clone();
+    rotated.vouch_timestamp = now;
+    new_borrower_vouches.push_back(rotated);
+    env.storage().persistent().set(
+        &DataKey::Vouches(new_borrower.clone()),
+        &new_borrower_vouches,
+    );
+    invalidate_weighted_stake_cache(&env, &new_borrower, &token);
+
+    // VoucherHistory bookkeeping: drop old_borrower if this was the
+    // voucher's only vouch for them, add new_borrower.
+    let mut history: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherHistory(voucher.clone()))
+        .unwrap_or(Vec::new(&env));
+    if !old_vouches.iter().any(|v| v.voucher == voucher) {
+        if let Some(p) = history.iter().position(|b| b == old_borrower) {
+            history.remove(p as u32);
+        }
+    }
+    if !history.iter().any(|b| b == new_borrower) {
+        history.push_back(new_borrower.clone());
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::VoucherHistory(voucher.clone()), &history);
+
+    // Rotation frequency + quarterly bonus tracking.
+    let bonus_bps: u32 = match last_rotation {
+        Some(last) if now.saturating_sub(last) >= ROTATION_BONUS_INTERVAL_SECS => {
+            ROTATION_BONUS_BPS
+        }
+        None => ROTATION_BONUS_BPS,
+        _ => 0,
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::RotationBonusBps(voucher.clone()), &bonus_bps);
+    env.storage()
+        .persistent()
+        .set(&DataKey::LastRotationTimestamp(voucher.clone()), &now);
+
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RotationCount(voucher.clone()))
+        .unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RotationCount(voucher.clone()), &(count + 1));
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("rotate")),
+        (
+            voucher,
+            old_borrower,
+            new_borrower,
+            vouch_rec.stake,
+            bonus_bps,
+        ),
+    );
+
+    Ok(())
+}
+
+/// Basis-point yield bonus currently earned by `voucher` from quarterly
+/// rotation, for the yield-distribution layer to apply.
+pub fn get_rotation_bonus_bps(env: Env, voucher: Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RotationBonusBps(voucher))
+        .unwrap_or(0)
+}
+
+/// Total number of rotations `voucher` has performed.
+pub fn get_rotation_count(env: Env, voucher: Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RotationCount(voucher))
+        .unwrap_or(0)
+}
+
+/// Scan `voucher`'s current vouches and flag the ones that haven't rotated
+/// in at least `STAGNANT_VOUCH_THRESHOLD_DAYS` days (measured from the
+/// voucher's last rotation, or from each vouch's creation timestamp if the
+/// voucher has never rotated).
+pub fn get_stagnant_vouches(env: Env, voucher: Address) -> Vec<StagnantVouch> {
+    let mut out: Vec<StagnantVouch> = Vec::new(&env);
+    let now = env.ledger().timestamp();
+    let borrowers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherHistory(voucher.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let last_rotation: Option<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LastRotationTimestamp(voucher.clone()));
+
+    for borrower in borrowers.iter() {
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+        if let Some(v) = vouches.iter().find(|v| v.voucher == voucher) {
+            let baseline = last_rotation.unwrap_or(v.vouch_timestamp);
+            let days_since = now.saturating_sub(baseline) / SECS_PER_DAY;
+            if days_since >= STAGNANT_VOUCH_THRESHOLD_DAYS {
+                out.push_back(StagnantVouch {
+                    voucher: voucher.clone(),
+                    borrower: borrower.clone(),
+                    stake: v.stake,
+                    days_since_rotation: days_since,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+// ── Vouch portfolio risk dashboard (Issue #1164) ──────────────────────────────
+
+/// Estimated loss if `default_rate_bps` of a voucher's total stake defaults.
+/// A simple, conservative approximation used purely for dashboard estimates
+/// (not an on-chain guarantee of loss).
+fn estimate_portfolio_loss(total_stake: i128, default_rate_bps: i128) -> i128 {
+    total_stake.saturating_mul(default_rate_bps) / BPS_DENOMINATOR
+}
+
+/// Concentration and risk report for everything `voucher` currently backs:
+/// per-borrower exposure, token ("sector") exposure, chain ("region")
+/// exposure, an HHI-style concentration score, estimated losses under a
+/// few default-rate scenarios, and rebalancing recommendations. Appends a
+/// `PortfolioSnapshot` to the voucher's history on every call so
+/// `PortfolioRiskReport::history` shows how the portfolio evolved.
+pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
+    let now = env.ledger().timestamp();
+    let borrowers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherHistory(voucher.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let mut borrower_breakdown: Vec<BorrowerExposure> = Vec::new(&env);
+    let mut token_addrs: Vec<Address> = Vec::new(&env);
+    let mut token_stakes: Vec<i128> = Vec::new(&env);
+    let mut chain_ids: Vec<Option<u32>> = Vec::new(&env);
+    let mut chain_stakes: Vec<i128> = Vec::new(&env);
+    let mut total_stake: i128 = 0;
+
+    for borrower in borrowers.iter() {
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+        let v = match vouches.iter().find(|v| v.voucher == voucher) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        total_stake = total_stake.saturating_add(v.stake);
+        borrower_breakdown.push_back(BorrowerExposure {
+            borrower: borrower.clone(),
+            stake: v.stake,
+            pct_bps: 0, // filled in below once total_stake is known
+        });
+
+        match token_addrs.iter().position(|t| t == v.token) {
+            Some(i) => {
+                let updated = token_stakes.get(i).unwrap().saturating_add(v.stake);
+                token_stakes.set(i, updated);
+            }
+            None => {
+                token_addrs.push_back(v.token.clone());
+                token_stakes.push_back(v.stake);
+            }
+        }
+
+        match chain_ids.iter().position(|c| c == v.chain_id) {
+            Some(i) => {
+                let updated = chain_stakes.get(i).unwrap().saturating_add(v.stake);
+                chain_stakes.set(i, updated);
+            }
+            None => {
+                chain_ids.push_back(v.chain_id);
+                chain_stakes.push_back(v.stake);
+            }
+        }
+    }
+
+    let borrower_count = borrower_breakdown.len();
+
+    let mut concentration_hhi_bps: i128 = 0;
+    let mut final_borrowers: Vec<BorrowerExposure> = Vec::new(&env);
+    for b in borrower_breakdown.iter() {
+        let pct_bps: u32 = if total_stake > 0 {
+            (b.stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
+        } else {
+            0
+        };
+        concentration_hhi_bps += (pct_bps as i128) * (pct_bps as i128) / BPS_DENOMINATOR;
+        final_borrowers.push_back(BorrowerExposure {
+            borrower: b.borrower.clone(),
+            stake: b.stake,
+            pct_bps,
+        });
+    }
+
+    let mut token_breakdown: Vec<TokenExposure> = Vec::new(&env);
+    for i in 0..token_addrs.len() {
+        let stake = token_stakes.get(i).unwrap();
+        let pct_bps: u32 = if total_stake > 0 {
+            (stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
+        } else {
+            0
+        };
+        token_breakdown.push_back(TokenExposure {
+            token: token_addrs.get(i).unwrap(),
+            stake,
+            pct_bps,
+        });
+    }
+
+    let mut chain_breakdown: Vec<ChainExposure> = Vec::new(&env);
+    for i in 0..chain_ids.len() {
+        let stake = chain_stakes.get(i).unwrap();
+        let pct_bps: u32 = if total_stake > 0 {
+            (stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
+        } else {
+            0
+        };
+        chain_breakdown.push_back(ChainExposure {
+            chain_id: chain_ids.get(i).unwrap(),
+            stake,
+            pct_bps,
+        });
+    }
+
+    let estimated_loss_1pct = estimate_portfolio_loss(total_stake, 100);
+    let estimated_loss_5pct = estimate_portfolio_loss(total_stake, 500);
+    let estimated_loss_10pct = estimate_portfolio_loss(total_stake, 1000);
+
+    let mut recommendations: Vec<String> = Vec::new(&env);
+    if let Some(top) = final_borrowers.iter().max_by_key(|b| b.pct_bps) {
+        if top.pct_bps > 3000 {
+            recommendations.push_back(String::from_str(
+                &env,
+                "Single-borrower concentration exceeds 30%; diversify across more borrowers.",
+            ));
+        }
+    }
+    if concentration_hhi_bps > 2500 {
+        recommendations.push_back(String::from_str(
+            &env,
+            "Portfolio concentration (HHI) is high; spread stake across additional borrowers.",
+        ));
+    }
+    if borrower_count > 0 && borrower_count < 3 {
+        recommendations.push_back(String::from_str(
+            &env,
+            "Fewer than 3 borrowers backed; broaden the portfolio to limit default impact.",
+        ));
+    }
+
+    let mut history: Vec<PortfolioSnapshot> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherPortfolioHistory(voucher.clone()))
+        .unwrap_or(Vec::new(&env));
+    history.push_back(PortfolioSnapshot {
+        timestamp: now,
+        total_stake,
+        borrower_count,
+    });
+    env.storage().persistent().set(
+        &DataKey::VoucherPortfolioHistory(voucher.clone()),
+        &history,
+    );
+
+    PortfolioRiskReport {
+        voucher,
+        total_stake,
+        borrower_count,
+        borrower_breakdown: final_borrowers,
+        token_breakdown,
+        chain_breakdown,
+        concentration_hhi_bps: concentration_hhi_bps as u32,
+        estimated_loss_1pct,
+        estimated_loss_5pct,
+        estimated_loss_10pct,
+        recommendations,
+        history,
+    }
+}
+
+/// Historical evolution of `voucher`'s portfolio, one snapshot per
+/// `get_portfolio_risk` call.
+pub fn get_portfolio_risk_history(env: Env, voucher: Address) -> Vec<PortfolioSnapshot> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VoucherPortfolioHistory(voucher))
+        .unwrap_or(Vec::new(&env))
 }
