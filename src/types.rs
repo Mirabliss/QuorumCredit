@@ -69,6 +69,25 @@ pub const VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
 /// Issue #1146: maximum number of items returned by a single page of any
 /// `*_page` read function, regardless of the caller-requested `limit`.
 pub const MAX_PAGE_SIZE: u32 = 50;
+// ── Issue #1285: Soroban Persistent Storage TTL Constants ─────────────────────
+//
+// Soroban persistent entries have a TTL measured in ledgers (1 ledger ≈ 5 s).
+// Once the TTL lapses the entry is archived off the live ledger; any subsequent
+// read will trap unless the entry is restored first.  We therefore extend_ttl
+// on every hot write path so long-lived entries never silently disappear.
+//
+// Ledger rate: ~17_280 ledgers / day (5 s / ledger).
+//
+/// extend_ttl threshold for loan/vouch/queue entries (~30 days in ledgers).
+/// If the current TTL is already above this we skip the extend to save CPU.
+pub const PERSISTENT_TTL_THRESHOLD_LEDGERS: u32 = 30 * 17_280; // 518_400
+/// Target TTL for loan/vouch/queue entries after extension (~1 year in ledgers).
+pub const PERSISTENT_TTL_TARGET_LEDGERS: u32 = 365 * 17_280; // 6_307_200
+/// Target TTL for the instance storage (config/admins/paused/etc.) (~1 year).
+pub const INSTANCE_TTL_TARGET_LEDGERS: u32 = 365 * 17_280; // 6_307_200
+/// Threshold for instance TTL bumps (~30 days).
+pub const INSTANCE_TTL_THRESHOLD_LEDGERS: u32 = 30 * 17_280; // 518_400
+
 /// Default governance voting period for slash-threshold proposals, in seconds (7 days).
 pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum delay before a timelocked governance action may be executed, in seconds (24 hours).

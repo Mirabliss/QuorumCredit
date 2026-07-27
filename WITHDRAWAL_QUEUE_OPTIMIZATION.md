@@ -248,6 +248,14 @@ All existing withdrawal-related tests must continue to pass:
 - [ ] Manual testing on testnet
 - [ ] Performance comparison: old vs new queue at 100+ size
 
+## Queue Size Cap (Issue #1286)
+
+`MAX_WITHDRAWAL_QUEUE_SIZE = 200` is defined in `src/types.rs` and enforced in
+`queue_withdrawal_internal` (`src/vouch.rs`).  Any call that would push the
+queue past the cap returns `ContractError::WithdrawalQueueFull` (code 179).
+The cap is intentionally conservative (200 entries) to keep per-processing-call
+gas bounded while comfortably accommodating real-world voucher counts.
+
 ## Backward Compatibility
 
 ✅ **Fully backward compatible**
@@ -277,7 +285,9 @@ All existing withdrawal-related tests must continue to pass:
    - Add to config storage and initialization
    
 3. **Queue size limits** — Prevent unbounded queue growth
-   - Add check: `if queue.len() >= MAX_QUEUE_SIZE { error }`
+   - ✅ **DONE (Issue #1286):** `MAX_WITHDRAWAL_QUEUE_SIZE = 200` constant added in `src/types.rs`.
+     Requests beyond the cap are rejected with `ContractError::WithdrawalQueueFull` (code 179)
+     in `queue_withdrawal_internal` (`src/vouch.rs`). Test coverage in `src/withdrawal_queue_test.rs`.
    
 4. **Batch processing strategy** — Process queue in chunks to stay under CPU limit
    - Implement `process_withdrawal_batch` more aggressively

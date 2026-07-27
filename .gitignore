@@ -8,7 +8,7 @@
 .env.local
 .env.*.local
 
-# Test snapshots
+# Test snapshots (Issue #1283-1286: keep test snapshots out of repo)
 test_snapshots/
 **/test_snapshots/
 **/*.snap
