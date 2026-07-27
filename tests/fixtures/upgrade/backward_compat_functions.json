@@ -1,0 +1,22 @@
+[
+  "initialize",
+  "vouch",
+  "increase_stake",
+  "decrease_stake",
+  "withdraw_vouch",
+  "request_loan",
+  "repay",
+  "initiate_slash_vote",
+  "vote_slash",
+  "pause",
+  "unpause",
+  "update_config",
+  "upgrade",
+  "get_config",
+  "get_loan",
+  "get_vouch",
+  "get_credit_score",
+  "get_fee_treasury",
+  "withdraw_slash_treasury",
+  "add_allowed_token"
+]
