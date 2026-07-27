@@ -1308,6 +1308,107 @@ impl QuorumCreditContract {
             .unwrap_or(0)
     }
 
+    // ── Loan Performance Attribution ─────────────────────────────────────────
+
+    /// Record the performance drivers (credit score, vouch quality, sector,
+    /// region) for a loan so they can later be attributed to its outcome.
+    pub fn record_loan_performance_factors(
+        env: Env,
+        loan_id: u64,
+        borrower: Address,
+        credit_score: u32,
+        vouch_quality_bps: u32,
+        sector: String,
+        region: String,
+    ) -> loan_attribution::PerformanceFactors {
+        loan_attribution::record_performance_factors(
+            env,
+            loan_id,
+            borrower,
+            credit_score,
+            vouch_quality_bps,
+            sector,
+            region,
+        )
+    }
+
+    /// Analyze how much each tracked factor contributed to a loan's outcome.
+    pub fn analyze_loan_attribution(
+        env: Env,
+        loan_id: u64,
+    ) -> loan_attribution::Attribution {
+        loan_attribution::analyze_loan_performance_attribution(env, loan_id)
+    }
+
+    /// Generate an aggregate performance report broken down by factor,
+    /// across every loan analyzed so far.
+    pub fn generate_factor_report(
+        env: Env,
+    ) -> loan_attribution::FactorPerformanceReport {
+        loan_attribution::generate_factor_performance_report(env)
+    }
+
+    /// Predict the likelihood of successful repayment (0-10_000 bps) for a
+    /// hypothetical loan given its factors, based on historical attribution.
+    pub fn predict_loan_success_bps(
+        env: Env,
+        credit_score: u32,
+        vouch_quality_bps: u32,
+        sector: String,
+        region: String,
+    ) -> u32 {
+        loan_attribution::predict_loan_success_probability_bps(
+            env,
+            credit_score,
+            vouch_quality_bps,
+            sector,
+            region,
+        )
+    }
+
+    // ── Loan Request Cart (batch loan requests) ──────────────────────────────
+
+    /// Stage a loan request in the borrower's cart instead of submitting it
+    /// immediately. Multiple items can be staged and submitted together via
+    /// `submit_batch_loan_request`.
+    pub fn add_to_loan_cart(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        tenure_secs: u64,
+    ) -> loan_cart::LoanCart {
+        loan_cart::add_to_loan_cart(env, borrower, amount, tenure_secs)
+    }
+
+    /// Read a borrower's currently staged cart contents.
+    pub fn get_loan_cart(env: Env, borrower: Address) -> loan_cart::LoanCart {
+        loan_cart::get_loan_cart(env, borrower)
+    }
+
+    /// Clear a borrower's cart without submitting it (recorded as abandoned).
+    pub fn abandon_loan_cart(env: Env, borrower: Address) {
+        loan_cart::abandon_loan_cart(env, borrower)
+    }
+
+    /// Submit every staged cart item as an individual loan request. Batches
+    /// of 3 or more items receive a 1% volume discount on requested
+    /// principal. Returns a per-item result.
+    pub fn submit_batch_loan_request(
+        env: Env,
+        borrower: Address,
+        loan_purpose: String,
+        threshold: i128,
+        token: Address,
+    ) -> Vec<loan_cart::BatchLoanRequestResult> {
+        loan_cart::submit_batch_loan_request(env, borrower, loan_purpose, threshold, token)
+    }
+
+    /// Read protocol-wide cart funnel statistics (created vs. submitted vs.
+    /// abandoned), for product analytics.
+    pub fn get_cart_abandonment_stats(env: Env) -> loan_cart::CartAbandonmentStats {
+        loan_cart::get_cart_abandonment_stats(env)
+    }
+
     // ── Liquidity Rebalancing (Issue #88) ─────────────────────────────────────
 
 

@@ -3,6 +3,7 @@ import { issueToken } from "../auth/tokens.js";
 import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { recurringPaymentStore } from "../recurring/recurringPaymentStore.js";
+import { loanCartStore } from "../cart/loanCartStore.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -26,6 +27,12 @@ interface RecurringPaymentRequestBody {
   amount?: number;
   frequencySeconds?: number;
   startDate?: number;
+}
+
+interface CartRequestBody {
+  borrower?: string;
+  amount?: number;
+  tenureSeconds?: number;
 }
 
 /** Minimal router for the handful of REST endpoints this service exposes — not
@@ -170,6 +177,99 @@ export function handleHttpRequest(
         res.writeHead(500, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "recurring payment execution failed unexpectedly" }));
       });
+    return;
+  }
+
+  // Loan request cart (batch loan requests, issue: cart system).
+  if (url.pathname === "/cart") {
+    if (req.method === "POST") {
+      readJsonBody<CartRequestBody>(req)
+        .then((body) => {
+          if (!body.borrower) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "borrower required" }));
+            return;
+          }
+          if (typeof body.amount !== "number" || !Number.isFinite(body.amount) || body.amount <= 0) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "amount must be a positive number" }));
+            return;
+          }
+          if (typeof body.tenureSeconds !== "number" || body.tenureSeconds <= 0) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "tenureSeconds must be a positive number" }));
+            return;
+          }
+          const cart = loanCartStore.addItem(body.borrower, body.amount, body.tenureSeconds);
+          metrics.incCounter("qc_cart_items_added_total");
+          res.writeHead(201, { "content-type": "application/json" });
+          res.end(JSON.stringify(cart));
+        })
+        .catch(() => {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid request body" }));
+        });
+      return;
+    }
+
+    if (req.method === "GET") {
+      const borrower = url.searchParams.get("borrower");
+      if (!borrower) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "borrower query param required" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(loanCartStore.getCart(borrower)));
+      return;
+    }
+  }
+
+  if (url.pathname === "/cart/submit" && req.method === "POST") {
+    readJsonBody<CartRequestBody>(req)
+      .then((body) => {
+        if (!body.borrower) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "borrower required" }));
+          return;
+        }
+        const results = loanCartStore.submitBatch(body.borrower);
+        metrics.incCounter("qc_cart_batches_submitted_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ borrower: body.borrower, results }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  if (url.pathname === "/cart/abandon" && req.method === "POST") {
+    readJsonBody<CartRequestBody>(req)
+      .then((body) => {
+        if (!body.borrower) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "borrower required" }));
+          return;
+        }
+        const abandoned = loanCartStore.abandon(body.borrower);
+        if (abandoned) {
+          metrics.incCounter("qc_cart_abandoned_total");
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ borrower: body.borrower, abandoned }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  if (url.pathname === "/cart/stats" && req.method === "GET") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(loanCartStore.getStats()));
     return;
   }
 
