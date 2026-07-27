@@ -807,6 +807,48 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
+
+    // ── Community Treasury (Issue #1249) ─────────────────────────────────────
+    /// i128 community treasury balance in stroops.
+    TreasuryBalance,
+    /// TreasuryProposal by proposal_id.
+    TreasuryProposal(u64),
+    /// u64 monotonic counter for treasury proposals.
+    TreasuryProposalCounter,
+    /// (proposal_id, voter) → bool: whether address has voted on proposal.
+    TreasuryVote(u64, Address),
+    /// TreasuryReport by month_id.
+    TreasuryReport(u64),
+
+    // ── Reputation NFT Badges (Issue #1251) ───────────────────────────────────
+    /// (owner, BadgeType) → Badge record.
+    ReputationBadge(Address, crate::reputation_nft::BadgeType),
+    /// BadgeType → BadgeStats (distribution statistics).
+    BadgeStats(crate::reputation_nft::BadgeType),
+    /// voucher → u32 count of repaid loans this voucher has backed.
+    VoucherBackedCount(Address),
+    /// borrower → u32 on-chain reputation score (used for Centurion badge).
+    ReputationScore(Address),
+
+    // ── Prediction Market (Issue #1253) ───────────────────────────────────────
+    /// PredictionMarket by market_id.
+    PredictionMarket(u64),
+    /// u64 monotonic counter for prediction markets.
+    PredictionMarketCounter,
+    /// (market_id, participant) → MarketPosition.
+    MarketPosition(u64, Address),
+    /// participant → PredictionAccuracy statistics.
+    PredictionAccuracy(Address),
+
+    // ── Interest Rate Options (Issue #1255) ───────────────────────────────────
+    /// InterestRateOption by option_id.
+    InterestRateOption(u64),
+    /// u64 monotonic counter for interest rate options.
+    OptionCounter,
+    /// OptionType → OptionOpenInterest aggregate statistics.
+    OptionOpenInterest(crate::interest_rate_options::OptionType),
+    /// u32 current implied volatility in basis-points per day.
+    ImpliedVolatility,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

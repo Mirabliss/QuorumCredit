@@ -12,6 +12,8 @@
 test_snapshots/
 **/test_snapshots/
 **/*.snap
+**/__snapshots__/
+**/snapshots/
 
 # WASM build artifacts
 *.wasm
@@ -28,6 +30,7 @@ test_snapshots/
 .idea/
 *.swp
 *.swo
+*.iml
 
 # OS
 .DS_Store
@@ -48,4 +51,34 @@ server/node_modules/
 server/dist/
 
 # Mutation testing output (cargo-mutants)
-mutants.out/
+mutants.out
+mutants.out.old/
+
+# Temporary files and test artifacts
+/tmp/
+**/*.tmp
+**/*.temp
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Node.js
+dashboard/dist/
+services/dist/
+tools/indexer/target/
+
+# Profiling
+perf.data
+perf.data.old
+flamegraph.svg
+*.profraw
+*.profdata
+
+# Benchmark output
+benchmark_results/
+**/*.bench
+
+# cargo-fuzz artifacts
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
