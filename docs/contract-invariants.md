@@ -105,6 +105,52 @@ The configured `yield_bps` must be in `[0, 10_000]` (0%–100%).
 
 ---
 
+## I9 — TotalActiveLoans Counter Matches Live Loan State (Issue #1288)
+
+The on-chain `TotalActiveLoans` counter must equal the number of borrowers for whom
+`DataKey::ActiveLoan` exists in persistent storage.
+
+```
+get_active_loan_count() == count(borrowers where ActiveLoan(borrower) exists)
+```
+
+**Maintained by:** `increment_tvl_counters` on `request_loan`; `decrement_tvl_counters`
+on `repay` (full), `slash`, `auto_slash`, and `claim_expired_loan`.
+
+**Violation trigger:** A code path that closes a loan without calling `decrement_tvl_counters`.
+
+---
+
+## I10 — TotalValueLocked Counter Matches Sum of Active Loan Amounts (Issue #1288)
+
+The on-chain `TotalValueLocked` counter must equal the sum of `loan.amount` across all
+currently active loans.
+
+```
+get_total_value_locked() == sum(loan.amount for all loans where loan.status == Active)
+```
+
+**Maintained by:** Same hooks as I9.
+
+**Violation trigger:** A loan amount change mid-life (refinance, etc.) that does not also
+update the TVL counter.
+
+---
+
+## On-Chain Aggregate View Functions (Issue #1288)
+
+Two new read-only entrypoints expose the TVL and active-loan counters for composability:
+
+| Function | Return Type | Description |
+|---|---|---|
+| `get_total_value_locked()` | `i128` | Sum of all active loan principal, in stroops |
+| `get_active_loan_count()` | `u32` | Number of currently active (undischarged) loans |
+
+These replace the off-chain aggregation in `server/src/bridge/metricsAggregator.ts` and
+allow other Soroban contracts to read QuorumCredit's protocol-wide TVL in a single call.
+
+---
+
 ## Testing
 
 All invariants are checked by `verify_invariants(env, client, token, borrowers)` in

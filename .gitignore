@@ -8,10 +8,11 @@
 .env.local
 .env.*.local
 
-# Test snapshots
+# Test snapshots (Rust insta / vitest / jest)
 test_snapshots/
 **/test_snapshots/
 **/*.snap
+**/__snapshots__/
 
 # WASM build artifacts
 *.wasm
@@ -46,6 +47,15 @@ tarpaulin-report.html
 dashboard/node_modules/
 server/node_modules/
 server/dist/
+dashboard/dist/
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
+mutants.out.old/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Temporary / scratch files
+*.tmp
+*.temp

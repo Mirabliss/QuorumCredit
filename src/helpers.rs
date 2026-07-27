@@ -499,6 +499,93 @@ pub fn get_borrower_list_page(env: &Env, offset: u32, limit: u32) -> (Vec<Addres
     paginate_vec(env, &list, offset, limit)
 }
 
+// ── Issue #1288: On-chain TVL / active-loan-count counters ────────────────────
+
+/// Increment both `TotalActiveLoans` and `TotalValueLocked` when a loan is issued.
+pub fn increment_tvl_counters(env: &Env, amount: i128) {
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalActiveLoans)
+        .unwrap_or(0u32);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalActiveLoans, &(count + 1));
+
+    let tvl: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalValueLocked)
+        .unwrap_or(0i128);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalValueLocked, &(tvl + amount));
+}
+
+/// Decrement both counters when a loan is closed (repaid or slashed).
+/// Guards against underflow so the counters never go negative.
+pub fn decrement_tvl_counters(env: &Env, amount: i128) {
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalActiveLoans)
+        .unwrap_or(0u32);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalActiveLoans, &count.saturating_sub(1));
+
+    let tvl: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalValueLocked)
+        .unwrap_or(0i128);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalValueLocked, &(tvl - amount).max(0));
+}
+
+/// Return the running count of currently active loans (Issue #1288).
+pub fn get_active_loan_count(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TotalActiveLoans)
+        .unwrap_or(0u32)
+}
+
+/// Return the running total of outstanding loan principal in stroops (Issue #1288).
+pub fn get_total_value_locked(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TotalValueLocked)
+        .unwrap_or(0i128)
+}
+
+// ── Issue #1289: Global voucher registry ──────────────────────────────────────
+
+/// Return the total count of distinct addresses that have ever submitted a vouch.
+pub fn get_voucher_count(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, soroban_sdk::Vec<Address>>(&DataKey::VoucherRegistry)
+        .map(|v| v.len())
+        .unwrap_or(0u32)
+}
+
+/// Paginated read of the global VoucherRegistry (Issue #1289).
+/// Returns a page of voucher addresses and the cursor for the next page (`None` if exhausted).
+pub fn get_voucher_list_page(
+    env: &Env,
+    cursor: u32,
+    limit: u32,
+) -> (soroban_sdk::Vec<Address>, Option<u32>) {
+    let registry: soroban_sdk::Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherRegistry)
+        .unwrap_or(soroban_sdk::Vec::new(env));
+    paginate_vec(env, &registry, cursor, limit)
+}
+
 pub fn primary_token(env: &Env) -> token::Client<'_> {
     token::Client::new(env, &config(env).token)
 }

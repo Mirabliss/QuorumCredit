@@ -306,6 +306,22 @@ fn commit_vouch(
         .persistent()
         .set(&DataKey::VoucherHistory(voucher.clone()), &history);
 
+    // Issue #1289: Register this address in the global VoucherRegistry on their first-ever vouch.
+    // The registry stores each distinct voucher address exactly once.
+    {
+        let mut registry: soroban_sdk::Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherRegistry)
+            .unwrap_or(soroban_sdk::Vec::new(env));
+        if !registry.iter().any(|a| a == voucher) {
+            registry.push_back(voucher.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::VoucherRegistry, &registry);
+        }
+    }
+
     let timestamp = env.ledger().timestamp();
 
     vouches.push_back(VouchRecord {
@@ -748,7 +764,7 @@ pub fn request_withdrawal(
     if priority_fee > 0 {
         let max_fee = vouch_rec
             .stake
-            .checked_mul(crate::types::MAX_PRIORITY_FEE_BPS)
+            .checked_mul(crate::helpers::config(&env).max_priority_fee_cap_bps)
             .ok_or(ContractError::ArithmeticError)?
             / BPS_DENOMINATOR;
         if priority_fee > max_fee {

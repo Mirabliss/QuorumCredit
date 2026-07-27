@@ -807,6 +807,15 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
+    /// Issue #1287: Governance-adjustable withdrawal-queue priority-fee cap,
+    /// in basis points of the voucher's own stake (default 1_000 = 10%).
+    MaxPriorityFeeCapBps,
+    /// Issue #1288: Running count of currently active (disbursed, not yet repaid/slashed) loans.
+    TotalActiveLoans,
+    /// Issue #1288: Running total of all loan principal currently outstanding, in stroops.
+    TotalValueLocked,
+    /// Issue #1289: Sorted list of every distinct address that has ever submitted a vouch.
+    VoucherRegistry,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1549,6 +1558,10 @@ pub struct Config {
     /// Index 0 = Tier 0 (most liquid, no bonus), 3 = Tier 3 (illiquid, max bonus).
     /// Example: [0, 50, 150, 300] means tier-3 tokens earn +300 bps extra yield.
     pub liquidity_tier_yield_bonus: Vec<i128>,
+    /// Issue #1287: Governance-adjustable cap on withdrawal-queue priority fees,
+    /// in basis points of the voucher's own stake (default 1_000 = 10%).
+    /// Replaces the compile-time constant `MAX_PRIORITY_FEE_BPS`.
+    pub max_priority_fee_cap_bps: i128,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────

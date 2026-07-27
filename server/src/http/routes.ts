@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { issueToken } from "../auth/tokens.js";
+import { loadApiKeyStore, type ApiKeyStore } from "../auth/apiKeyStore.js";
+import { defaultAuthRateLimiter, type AuthRateLimiter } from "../auth/rateLimiter.js";
 import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { recurringPaymentStore } from "../recurring/recurringPaymentStore.js";
@@ -8,6 +10,10 @@ export interface RouteContext {
   authSecret: string;
   tokenTtlSeconds: number;
   webhookSecret?: string; // Optional: secret for receiving webhooks
+  /** Issue #1290: provisioned API-key store; defaults to env-loaded store. */
+  apiKeyStore?: ApiKeyStore;
+  /** Issue #1290: per-IP rate limiter for failed auth; defaults to module singleton. */
+  authRateLimiter?: AuthRateLimiter;
 }
 
 interface TokenRequestBody {
@@ -174,20 +180,44 @@ export function handleHttpRequest(
   }
 
   if (req.method === "POST" && url.pathname === "/api/auth/token") {
+    // Issue #1290: validate the submitted API key against the provisioned-keys store.
+    // Unrecognised keys → 401.  Repeated failures per IP are rate-limited.
+    const keyStore = ctx.apiKeyStore ?? loadApiKeyStore();
+    const rateLimiter = ctx.authRateLimiter ?? defaultAuthRateLimiter;
+    const sourceIp =
+      (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
+      req.socket.remoteAddress ??
+      "unknown";
+
+    if (rateLimiter.isBlocked(sourceIp)) {
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "too many failed attempts — try again later" }));
+      return;
+    }
+
     readJsonBody<TokenRequestBody>(req)
       .then((body) => {
-        // NOTE: this issues a token to anyone who asks with any apiKey string — real
-        // deployments must swap in a genuine credential check (e.g. verifying apiKey
-        // against a provisioned-keys store) before going to production. Wiring that
-        // check is intentionally left as a single, obvious seam (this block) rather
-        // than left implicit, since this repo has no existing API-key store to
-        // integrate against.
         if (!body.apiKey) {
           res.writeHead(400, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "apiKey required" }));
           return;
         }
+
+        if (!keyStore.isValid(body.apiKey)) {
+          const blocked = rateLimiter.recordFailure(sourceIp);
+          metrics.incCounter("qc_auth_failures_total");
+          if (blocked) {
+            res.writeHead(429, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "too many failed attempts — try again later" }));
+          } else {
+            res.writeHead(401, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "invalid API key" }));
+          }
+          return;
+        }
+
         const issued = issueToken(ctx.authSecret, body.apiKey, ctx.tokenTtlSeconds, body.borrower);
+        metrics.incCounter("qc_auth_issued_total");
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(issued));
       })
