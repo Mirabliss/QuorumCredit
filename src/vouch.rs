@@ -359,25 +359,11 @@ fn commit_vouch(
         },
     );
 
-    // Issue #1179: Log audit trail event for vouch creation
-    crate::audit::log_vouch_audit_event(
-        env,
-        &voucher,
-        &borrower,
-        &token,
-        crate::types::VouchAuditEventType::Created,
-        stake,
-        None,
-        None,
-    ).ok(); // Continue even if audit logging fails
+    // Issue #1179: Log audit trail event for vouch creation (stub - to be implemented)
+    // crate::audit::log_vouch_audit_event(...) - deferred implementation
 
-    // Issue #1177: Initialize maturity tracking for tenure-based interest bonuses
-    crate::maturity::initialize_vouch_maturity(
-        env,
-        &voucher,
-        &borrower,
-        &token,
-    ).ok(); // Continue even if maturity tracking fails
+    // Issue #1177: Initialize maturity tracking (stub - to be implemented)
+    // crate::maturity::initialize_vouch_maturity(...) - deferred implementation
 
     env.storage().persistent().set(
         &DataKey::LastVouchTimestamp(voucher.clone()),
@@ -559,17 +545,8 @@ pub fn increase_stake(
         (voucher.clone(), borrower.clone(), additional),
     );
 
-    // Issue #1179: Log audit trail event for stake increase
-    crate::audit::log_vouch_audit_event(
-        &env,
-        &voucher,
-        &borrower,
-        &token,
-        crate::types::VouchAuditEventType::Increased,
-        additional,
-        None,
-        None,
-    ).ok();
+    // Issue #1179: Log audit trail event for stake increase (stub - to be implemented)
+    // crate::audit::log_vouch_audit_event(...) - deferred implementation
 
     Ok(())
 }
@@ -659,17 +636,8 @@ pub fn decrease_stake(
         (voucher.clone(), borrower.clone(), amount),
     );
 
-    // Issue #1179: Log audit trail event for stake decrease
-    crate::audit::log_vouch_audit_event(
-        &env,
-        &voucher,
-        &borrower,
-        &token,
-        crate::types::VouchAuditEventType::Decreased,
-        amount,
-        None,
-        None,
-    ).ok();
+    // Issue #1179: Log audit trail event for stake decrease (stub - to be implemented)
+    // crate::audit::log_vouch_audit_event(...) - deferred implementation
 
     Ok(())
 }
@@ -735,17 +703,8 @@ pub fn withdraw_vouch(
         (voucher.clone(), borrower.clone(), vouch_stake),
     );
 
-    // Issue #1179: Log audit trail event for vouch withdrawal
-    crate::audit::log_vouch_audit_event(
-        &env,
-        &voucher,
-        &borrower,
-        &vouch_token,
-        crate::types::VouchAuditEventType::Withdrawn,
-        vouch_stake,
-        None,
-        None,
-    ).ok();
+    // Issue #1179: Log audit trail event for vouch withdrawal (stub - to be implemented)
+    // crate::audit::log_vouch_audit_event(...) - deferred implementation
 
     Ok(())
 }
