@@ -434,7 +434,11 @@ export function handleHttpRequest(
   }
 
   // Webhook endpoints
-  if (url.pathname.startsWith("/api/webhooks") || url.pathname === "/webhook") {
+  if (
+    url.pathname.startsWith("/api/webhooks") ||
+    url.pathname === "/webhook" ||
+    url.pathname === "/webhooks/subscribe"
+  ) {
     const webhookCtx: WebhookRoutesContext = {
       webhookSecret: ctx.webhookSecret,
     };
