@@ -177,6 +177,7 @@ impl QuorumCreditContract {
                 immunity_period_seconds: 0,
                 insurance_premium_bps: 0,
                 liquidity_tier_yield_bonus: Vec::new(&env),
+                max_priority_fee_cap_bps: MAX_PRIORITY_FEE_BPS,
             },
         );
 
@@ -686,6 +687,26 @@ impl QuorumCreditContract {
             .unwrap_or(DEFAULT_REFERRAL_BONUS_BPS)
     }
 
+    /// Issue #1287: Set the governance-adjustable withdrawal-queue priority-fee cap.
+    /// The cap is expressed in basis points of the voucher's own stake (max 10_000 = 100%).
+    /// Requires admin approval.
+    pub fn set_priority_fee_cap_bps(env: Env, admin_signers: Vec<Address>, cap_bps: i128) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        assert!(cap_bps >= 0 && cap_bps <= 10_000, "cap_bps must be 0..=10000");
+        let mut cfg = helpers::config(&env);
+        cfg.max_priority_fee_cap_bps = cap_bps;
+        env.storage().instance().set(&DataKey::Config, &cfg);
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("feecap")),
+            cap_bps,
+        );
+    }
+
+    /// Issue #1287: Get the current withdrawal-queue priority-fee cap in basis points.
+    pub fn get_priority_fee_cap_bps(env: Env) -> i128 {
+        helpers::config(&env).max_priority_fee_cap_bps
+    }
+
     pub fn get_withdrawal_queue(env: Env, borrower: Address) -> Vec<QueuedWithdrawal> {
         vouch::get_withdrawal_queue(env, borrower)
     }
@@ -845,6 +866,9 @@ impl QuorumCreditContract {
 
         // Update credit score after slash
         let _ = credit_score::update_credit_score(env.clone(), borrower.clone());
+
+        // Issue #1288: Decrement on-chain TVL / active-loan-count counters on slash.
+        helpers::decrement_tvl_counters(&env, loan.amount);
 
         // Clean up vouches storage last
         env.storage()
@@ -1151,9 +1175,9 @@ impl QuorumCreditContract {
             (symbol_short!("loan"), symbol_short!("autoslash")),
             (borrower, total_slash),
         );
+        // Issue #1288: Decrement on-chain TVL / active-loan-count counters on auto-slash.
+        helpers::decrement_tvl_counters(&env, loan.amount);
     }
-
-    /// Allows vouchers to claim back their stake if loan has expired without repayment or slash.
     pub fn claim_expired_loan(env: Env, borrower: Address) {
         borrower.require_auth();
 
@@ -1214,6 +1238,8 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        // Issue #1288: Decrement on-chain TVL / active-loan-count counters on expired claim.
+        helpers::decrement_tvl_counters(&env, loan.amount);
     }
 
     /// Admin withdraws accumulated slashed funds.
@@ -1944,6 +1970,19 @@ impl QuorumCreditContract {
         crate::helpers::get_borrower_count(&env)
     }
 
+    /// Issue #1288: On-chain view of total outstanding loan principal, in stroops.
+    /// Maintained as a running counter updated on every loan issuance, repayment, and slash.
+    /// Any Soroban contract may call this for composability without enumerating borrowers.
+    pub fn get_total_value_locked(env: Env) -> i128 {
+        crate::helpers::get_total_value_locked(&env)
+    }
+
+    /// Issue #1288: On-chain view of the number of currently active loans.
+    /// Maintained as a running counter updated on every loan issuance and closure.
+    pub fn get_active_loan_count(env: Env) -> u32 {
+        crate::helpers::get_active_loan_count(&env)
+    }
+
     /// Paginated read of the global borrower list (Issue #1146).
     pub fn get_borrower_list_page(
         env: Env,
@@ -1951,6 +1990,22 @@ impl QuorumCreditContract {
         limit: u32,
     ) -> (Vec<Address>, Option<u32>) {
         crate::helpers::get_borrower_list_page(&env, offset, limit)
+    }
+
+    /// Issue #1289: Total count of distinct addresses that have ever submitted a vouch.
+    /// Maintained by `VoucherRegistry` updated on each new voucher's first-ever vouch.
+    pub fn get_voucher_count(env: Env) -> u32 {
+        crate::helpers::get_voucher_count(&env)
+    }
+
+    /// Issue #1289: Paginated read of the global voucher registry.
+    /// Returns a page of voucher addresses and an optional cursor for the next page.
+    pub fn get_voucher_list_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<Address>, Option<u32>) {
+        crate::helpers::get_voucher_list_page(&env, cursor, limit)
     }
 
     /// Verify all documented protocol invariants (I1-I8) for `borrowers`

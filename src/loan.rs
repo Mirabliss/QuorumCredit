@@ -277,6 +277,9 @@ pub fn request_loan(
 
     token.transfer(&env.current_contract_address(), &borrower, &amount);
 
+    // Issue #1288: Maintain running on-chain TVL / active-loan-count counters.
+    crate::helpers::increment_tvl_counters(&env, amount);
+
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("created")),
         (borrower, amount),
@@ -631,6 +634,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         env.storage()
             .persistent()
             .remove(&DataKey::YieldDistribution(loan.id));
+
+        // Issue #1288: Decrement on-chain TVL / active-loan-count counters on repayment.
+        crate::helpers::decrement_tvl_counters(&env, loan.amount);
 
         env.events().publish(
             (symbol_short!("loan"), symbol_short!("repaid")),
