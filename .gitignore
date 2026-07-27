@@ -12,6 +12,8 @@
 test_snapshots/
 **/test_snapshots/
 **/*.snap
+**/__snapshots__/
+**/snapshots/
 
 # WASM build artifacts
 *.wasm
@@ -28,13 +30,15 @@ test_snapshots/
 .idea/
 *.swp
 *.swo
-
-# OS
+*.iml
 .DS_Store
 Thumbs.db
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
 # Cargo.lock  # intentionally tracked
@@ -43,9 +47,21 @@ Thumbs.db
 lcov.info
 coverage/
 tarpaulin-report.html
+tarpaulin-report.json
+*.profraw
+*.profdata
+
+# Node / JS tooling
 dashboard/node_modules/
 server/node_modules/
+services/*/node_modules/
+tools/*/node_modules/
+node_modules/
 server/dist/
+dashboard/dist/
+services/*/dist/
+.npm/
+.yarn/
 
 # Mutation testing output (cargo-mutants)
 mutants.out/

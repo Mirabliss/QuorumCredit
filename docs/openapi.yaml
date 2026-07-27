@@ -1,7 +1,12 @@
 openapi: 3.0.3
 info:
-  title: QuorumCredit Contract API
+  title: QuorumCredit Contract API (Soroban RPC Reference)
   description: |
+    **This file documents the Soroban smart-contract function surface — NOT the
+    HTTP server.**  Each path here maps to a contract function invoked via
+    `stellar contract invoke`, NOT an HTTP endpoint.  The broadcast/relay server
+    REST API is documented in the root `openapi.yaml`.
+
     RPC-style API for the QuorumCredit Soroban smart contract on Stellar.
     All monetary amounts are in **stroops** (1 XLM = 10,000,000 stroops), represented as i128 strings.
     All addresses are Stellar account/contract addresses (G... or C... strings).

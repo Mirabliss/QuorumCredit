@@ -367,6 +367,87 @@ impl QuorumCreditContract {
         collateral_pool::get_pool_chain_stake(env, pool_id, chain_id)
     }
 
+    // ── Liquidity Mining Campaigns (Issue #1257) ──────────────────────────────
+
+    /// Issue #1257: Create a new liquidity mining campaign.
+    /// Admin deposits `incentive_pool` tokens; rewards are distributed to
+    /// participating vouchers proportional to their recorded stake weight.
+    pub fn create_mining_campaign(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+        incentive_pool: i128,
+        duration_secs: u64,
+        campaign_type: crate::types::MiningCampaignType,
+    ) -> Result<u64, ContractError> {
+        liquidity_mining::create_mining_campaign(env, admin_signers, token, incentive_pool, duration_secs, campaign_type)
+    }
+
+    /// Issue #1257: Record a voucher's participation weight in an active campaign.
+    /// Must be called while the campaign window is open.
+    pub fn record_mining_participation(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+        stake_weight: i128,
+    ) -> Result<(), ContractError> {
+        liquidity_mining::record_participation(env, campaign_id, participant, stake_weight)
+    }
+
+    /// Issue #1257: Claim the caller's proportional mining reward after a
+    /// campaign has ended. Returns the amount disbursed (stroops).
+    pub fn claim_mining_reward(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+    ) -> Result<i128, ContractError> {
+        liquidity_mining::claim_mining_reward(env, campaign_id, participant)
+    }
+
+    /// Issue #1257: Admin transitions an active campaign to Ended early.
+    pub fn end_mining_campaign(
+        env: Env,
+        admin_signers: Vec<Address>,
+        campaign_id: u64,
+    ) -> Result<(), ContractError> {
+        liquidity_mining::end_mining_campaign(env, admin_signers, campaign_id)
+    }
+
+    /// Issue #1257: Admin cancels a campaign and refunds the undistributed pool.
+    pub fn cancel_mining_campaign(
+        env: Env,
+        admin_signers: Vec<Address>,
+        campaign_id: u64,
+    ) -> Result<(), ContractError> {
+        liquidity_mining::cancel_mining_campaign(env, admin_signers, campaign_id)
+    }
+
+    /// Issue #1257: Read a campaign record by ID.
+    pub fn get_mining_campaign(
+        env: Env,
+        campaign_id: u64,
+    ) -> Result<crate::types::MiningCampaign, ContractError> {
+        liquidity_mining::get_mining_campaign(env, campaign_id)
+    }
+
+    /// Issue #1257: Return the recorded participation weight for a voucher in a campaign.
+    pub fn get_mining_participation(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+    ) -> i128 {
+        liquidity_mining::get_mining_participation(env, campaign_id, participant)
+    }
+
+    /// Issue #1257: Return the amount already claimed by a participant in a campaign.
+    pub fn get_mining_claimed(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+    ) -> i128 {
+        liquidity_mining::get_mining_claimed(env, campaign_id, participant)
+    }
+
     /// #642: Vouch with an explicit sector label for diversification enforcement.
     pub fn vouch_with_sector(
         env: Env,
@@ -2713,9 +2794,19 @@ impl QuorumCreditContract {
     }
     // ── Custom Attributes ────────────────────────────────────────────────────
 
+    /// Issue #1282: Persist a key/value attribute for the caller.
+    /// Requires caller auth. Keys and values are capped at 256 bytes.
+    /// A caller may store at most 50 attributes.
+    pub fn set_attribute(env: Env, caller: Address, key: soroban_sdk::String, value: soroban_sdk::String) -> Result<(), ContractError> {
+        crate::set_attribute(env, caller, key, value)
+    }
 
+    /// Issue #1282: Return all custom attributes stored for `caller`.
+    pub fn get_attributes(env: Env, caller: Address) -> Vec<AttributeEntry> {
+        crate::get_attributes(env, caller)
+    }
 
-
+    /// Issue #1282: Remove a single attribute by key for `caller` (idempotent).
     pub fn remove_attribute(env: Env, caller: Address, key: soroban_sdk::String) -> Result<(), ContractError> {
         crate::remove_attribute(env, caller, key)
     }
@@ -3242,15 +3333,88 @@ pub fn is_relay_nonce_used(_env: Env, _source_chain: u32, _nonce: u64) -> bool {
     false
 }
 
-pub fn set_attribute(_env: Env, _caller: Address, _key: soroban_sdk::String, _value: soroban_sdk::String) -> Result<(), ContractError> {
+/// Issue #1282: Maximum number of custom attributes a single caller may store.
+/// Caps persistent-storage growth to a bounded constant per account.
+const MAX_CUSTOM_ATTRIBUTES: u32 = 50;
+
+/// Issue #1282: Maximum byte length for an attribute key or value.
+const MAX_ATTRIBUTE_BYTES: u32 = 256;
+
+/// Issue #1282: Set (insert or overwrite) a custom attribute for `caller`.
+/// - Requires `caller` to authorise the call.
+/// - Key and value lengths are capped at `MAX_ATTRIBUTE_BYTES`.
+/// - Per-caller attribute count is capped at `MAX_CUSTOM_ATTRIBUTES`; trying
+///   to insert a new key beyond the cap returns `InvalidAmount`.
+pub fn set_attribute(env: Env, caller: Address, key: soroban_sdk::String, value: soroban_sdk::String) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    // Enforce length caps to bound storage growth.
+    if key.len() == 0 || key.len() > MAX_ATTRIBUTE_BYTES || value.len() > MAX_ATTRIBUTE_BYTES {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let storage_key = DataKey::CustomAttributes(caller.clone());
+    let mut attrs: Vec<AttributeEntry> = env
+        .storage()
+        .persistent()
+        .get(&storage_key)
+        .unwrap_or(Vec::new(&env));
+
+    // Check if key already exists — update in place.
+    let mut found = false;
+    let mut updated: Vec<AttributeEntry> = Vec::new(&env);
+    for entry in attrs.iter() {
+        if entry.key == key {
+            updated.push_back(AttributeEntry {
+                key: key.clone(),
+                value: value.clone(),
+            });
+            found = true;
+        } else {
+            updated.push_back(entry.clone());
+        }
+    }
+
+    if !found {
+        // New key: enforce the per-caller cap.
+        if attrs.len() >= MAX_CUSTOM_ATTRIBUTES {
+            return Err(ContractError::InvalidAmount);
+        }
+        updated.push_back(AttributeEntry { key, value });
+    }
+
+    env.storage().persistent().set(&storage_key, &updated);
     Ok(())
 }
 
-pub fn get_attributes(env: Env, _caller: Address) -> Vec<AttributeEntry> {
-    Vec::new(&env)
+/// Issue #1282: Return all custom attributes stored for `caller`.
+pub fn get_attributes(env: Env, caller: Address) -> Vec<AttributeEntry> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CustomAttributes(caller))
+        .unwrap_or(Vec::new(&env))
 }
 
-pub fn remove_attribute(_env: Env, _caller: Address, _key: soroban_sdk::String) -> Result<(), ContractError> {
+/// Issue #1282: Remove a single attribute by key for `caller`.
+/// Returns `Ok(())` even if the key did not exist (idempotent delete).
+pub fn remove_attribute(env: Env, caller: Address, key: soroban_sdk::String) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    let storage_key = DataKey::CustomAttributes(caller.clone());
+    let attrs: Vec<AttributeEntry> = env
+        .storage()
+        .persistent()
+        .get(&storage_key)
+        .unwrap_or(Vec::new(&env));
+
+    let mut updated: Vec<AttributeEntry> = Vec::new(&env);
+    for entry in attrs.iter() {
+        if entry.key != key {
+            updated.push_back(entry.clone());
+        }
+    }
+
+    env.storage().persistent().set(&storage_key, &updated);
     Ok(())
 }
 
