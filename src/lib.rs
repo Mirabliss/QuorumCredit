@@ -53,8 +53,6 @@ pub mod vouch;
 pub mod vouch_reputation;
 pub mod zk_snarks;
 pub mod collateral_pool;
-pub mod archive;
-pub mod ipfs_archive;
 pub mod syndication;
 pub mod vouch_syndication;
 pub mod vouch_milestones;
@@ -178,6 +176,10 @@ impl QuorumCreditContract {
                 liquidity_tier_yield_bonus: Vec::new(&env),
             },
         );
+
+        // Issue #1285: bump instance TTL at initialization so the contract
+        // instance storage survives for the protocol's expected lifetime.
+        helpers::bump_instance(&env);
 
         env.events().publish(
             (symbol_short!("contract"), symbol_short!("init")),

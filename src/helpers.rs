@@ -3,7 +3,10 @@ use crate::types::{
     Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
     COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS, MILESTONE_25_PCT_PERMILLE,
     MILESTONE_50_DISCOUNT_BPS, MILESTONE_50_PCT_PERMILLE, MILESTONE_75_DISCOUNT_BPS,
-    MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75, MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
+    MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75,
+    MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
+    PERSISTENT_TTL_THRESHOLD_LEDGERS, PERSISTENT_TTL_TARGET_LEDGERS,
+    INSTANCE_TTL_THRESHOLD_LEDGERS, INSTANCE_TTL_TARGET_LEDGERS,
 };
 use soroban_sdk::{token, Address, Env, String, Symbol, Vec};
 
@@ -122,10 +125,43 @@ pub fn validate_timestamp(_env: &Env, timestamp: u64, now: u64) -> Result<(), Co
 // ── Config & Loan Helpers ─────────────────────────────────────────────────────
 
 pub fn config(env: &Env) -> Config {
+    // Issue #1285: bump instance TTL on every config read so the contract
+    // instance never silently expires due to inactivity.
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD_LEDGERS, INSTANCE_TTL_TARGET_LEDGERS);
     env.storage()
         .instance()
         .get(&DataKey::Config)
         .expect("not initialized")
+}
+
+// ── Issue #1285: TTL / Storage Lifecycle Helpers ──────────────────────────────
+
+/// Extend the TTL of a persistent storage entry so it is never silently archived.
+///
+/// Soroban persistent entries expire after their TTL elapses; this helper bumps
+/// every long-lived key on hot read/write paths so the entry stays live.
+/// Only extends if the current TTL is below `PERSISTENT_TTL_THRESHOLD_LEDGERS`
+/// (≈30 days), which avoids unnecessary CPU when the entry was already recently
+/// touched.
+#[inline]
+pub fn bump_persistent(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD_LEDGERS, PERSISTENT_TTL_TARGET_LEDGERS);
+}
+
+/// Extend the TTL of the contract instance (config, admins, paused flag, etc.).
+///
+/// Instance storage is cheaper to bump than persistent, and a single call
+/// covers every instance key.  Call this on every state-mutating entry point
+/// so the instance never silently expires.
+#[inline]
+pub fn bump_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD_LEDGERS, INSTANCE_TTL_TARGET_LEDGERS);
 }
 
 pub fn get_admins(env: &Env) -> Vec<Address> {

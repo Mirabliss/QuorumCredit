@@ -8,10 +8,12 @@
 .env.local
 .env.*.local
 
-# Test snapshots
+# Test snapshots (Issue #1283-1286: keep test snapshots out of repo)
 test_snapshots/
 **/test_snapshots/
 **/*.snap
+snapshots/
+**/snapshots/
 
 # WASM build artifacts
 *.wasm
@@ -28,6 +30,7 @@ test_snapshots/
 .idea/
 *.swp
 *.swo
+*.orig
 
 # OS
 .DS_Store
@@ -35,6 +38,7 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
 # Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
 # Cargo.lock  # intentionally tracked
@@ -43,9 +47,32 @@ Thumbs.db
 lcov.info
 coverage/
 tarpaulin-report.html
+
+# Node.js
 dashboard/node_modules/
 server/node_modules/
 server/dist/
+node_modules/
+dist/
+*.tsbuildinfo
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
+mutants.out.old/
+
+# Profiling and benchmarking artifacts
+perf.data
+perf.data.old
+flamegraph.svg
+*.profdata
+*.profraw
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
