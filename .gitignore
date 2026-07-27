@@ -12,9 +12,11 @@
 test_snapshots/
 **/test_snapshots/
 **/*.snap
+**/__snapshots__/
 
 # WASM build artifacts
 *.wasm
+*.wasm.opt
 
 # Windows installer binaries
 *.exe
@@ -28,13 +30,19 @@ test_snapshots/
 .idea/
 *.swp
 *.swo
+*.iml
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Logs
 *.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
 # Cargo.lock  # intentionally tracked
@@ -43,9 +51,52 @@ Thumbs.db
 lcov.info
 coverage/
 tarpaulin-report.html
+*.profraw
+*.profdata
+
+# Node build outputs
 dashboard/node_modules/
 server/node_modules/
 server/dist/
+dashboard/dist/
+services/*/node_modules/
+services/*/dist/
+tools/*/node_modules/
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
+mutants.out.lock
+
+# Benchmark output
+bench-results/
+benchmark_results/
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+
+# Python bytecode (sybil_simulation.py etc.)
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Rust incremental compilation artifacts
+*.d
+*.rlib
+*.rmeta
+
+# SQLite indexer databases (local dev)
+*.db
+*.db-shm
+*.db-wal
+
+# Synthetic monitoring local run artifacts
+synthetic-results/
+
+# Tracing export artifacts
+traces/
+jaeger-data/
+
+# Feature flag local overrides (never commit)
+feature-flags.local.json

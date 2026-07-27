@@ -59,6 +59,9 @@ pub mod syndication;
 pub mod vouch_syndication;
 pub mod vouch_milestones;
 pub mod recurring_payment;
+pub mod feature_flags;
+pub mod tracing;
+pub mod synthetic_monitoring;
 
 #[cfg(test)]
 mod governance_test;
