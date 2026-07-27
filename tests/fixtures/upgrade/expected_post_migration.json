@@ -1,0 +1,22 @@
+{
+  "description": "Expected shape of contract state immediately after applying an upgrade against tests/fixtures/upgrade/pre_upgrade_state.json. Field counts and totals must match; new optional fields introduced by the upgrade may be added but existing fields must not be removed or retyped.",
+  "invariants": [
+    "config.admins length and admin_threshold are byte-for-byte identical to pre-upgrade",
+    "loans array length is unchanged (3)",
+    "sum of loans[].principal is unchanged (8000000)",
+    "each loan's status enum value maps to the same semantic status post-upgrade (active/repaid/defaulted)",
+    "vouches array length is unchanged (3)",
+    "sum of vouches[].stake is unchanged (9000000)",
+    "credit_scores entries exist for every account present pre-upgrade, with scores unchanged unless the upgrade explicitly recalculates scoring (must be documented in the upgrade PR if so)",
+    "treasury.fee_treasury and treasury.slash_treasury are unchanged unless the upgrade explicitly modifies treasury accounting (must be documented in the upgrade PR if so)"
+  ],
+  "post_upgrade_checks": [
+    { "check": "get_config", "expect": "matches config block above, plus any new fields with documented defaults" },
+    { "check": "get_loan(GBORROWER1EXAMPLE, native)", "expect": "status=active, principal=5000000" },
+    { "check": "get_loan(GBORROWER2EXAMPLE, native)", "expect": "status=repaid, amount_repaid=2000000" },
+    { "check": "get_loan(GBORROWER3EXAMPLE, native)", "expect": "status=defaulted" },
+    { "check": "get_vouch(GVOUCHER1EXAMPLE, GBORROWER1EXAMPLE, native)", "expect": "stake=3000000" },
+    { "check": "get_credit_score(GBORROWER1EXAMPLE)", "expect": "score=620 unless upgrade PR documents a recalculation" },
+    { "check": "get_fee_treasury", "expect": "15000000 unless upgrade PR documents a treasury migration" }
+  ]
+}

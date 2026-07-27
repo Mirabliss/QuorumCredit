@@ -1,0 +1,16 @@
+{
+  "indexer_summary_url": "http://localhost:8081/summary",
+  "history_path": "artifacts/state_history.json",
+  "max_history_entries": 720,
+  "default_storage_limit": 4000000,
+  "alert_webhook": "https://hooks.slack.com/services/REPLACE/WITH/REAL_WEBHOOK",
+  "thresholds": {
+    "max_default_increase_per_poll": 5,
+    "max_loan_count_increase_per_poll": 1000,
+    "interest_rate_bps_min": 0,
+    "interest_rate_bps_max": 5000,
+    "storage_usage_warn_pct": 80,
+    "max_gas_growth_pct": 25,
+    "max_vouch_drop_pct": 30
+  }
+}

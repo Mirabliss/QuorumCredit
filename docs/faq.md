@@ -390,6 +390,93 @@ QuorumCredit has undergone security audits. See [SECURITY.md](../SECURITY.md) fo
 
 ---
 
+## Credit Scores Deep Dive
+
+This section centralizes the questions support channels see most often about how credit scores work, since scoring is the topic borrowers ask about the most.
+
+### What inputs feed into my credit score?
+
+| Input | Effect | Weight |
+|-------|--------|--------|
+| On-time repayments | Increases score | High |
+| Defaults | Decreases score, compounds with count | Very high |
+| Loan size repaid | Larger repaid loans increase score more | Medium |
+| Active voucher count | More distinct vouchers increases score | Medium |
+| Account age | Older, active accounts score slightly higher | Low |
+
+See [Credit Score Guide](credit-score-guide.md) for the full formula and [Credit Score Migration](credit-score-migration.md) for how historical scores are carried across upgrades.
+
+### Why did my score drop after a repayment?
+
+This is one of the most common support tickets. Two explanations account for almost all cases:
+1. **A prior default is still in the lookback window.** Defaults have a longer decay period than repayments have a boost period, so a single default can outweigh several on-time repayments for weeks.
+2. **You repaid a very small loan.** Small loans contribute a smaller positive delta than the negative delta from an unrelated default or missed deadline elsewhere in your history.
+
+**Example**: You repay a 200,000-stroop loan on time (+small boost), but you defaulted on a separate 5,000,000-stroop loan 10 days ago (−large penalty still active). Net effect: score still trends down until the default ages out.
+
+### Does requesting a loan and not taking it affect my score?
+
+No. Only `request_loan()` calls that result in an actual disbursement are scored. Eligibility checks and quote calls are read-only and never touch your score.
+
+### Can my score go negative or does it floor at zero?
+
+Scores floor at zero. A borrower with repeated defaults will sit at the floor rather than go negative, but will remain ineligible for new loans until enough positive history accrues or the blacklist (if triggered) is cleared by an admin.
+
+### How often does my score recalculate?
+
+Scores are recalculated on-chain at the moment a scoring event occurs (repayment, default, new vouch) — there is no background batch job. If you don't see an update immediately after a transaction, check that the transaction actually confirmed (see [Troubleshooting Guide](troubleshooting-guide.md)) rather than assuming a delay.
+
+### Do vouchers have a credit score too?
+
+Vouchers don't have a borrower-style credit score, but their **vouch history** (number of successful vouches, slash participation, stake retained) is visible on-chain and often used informally by borrowers to judge which vouchers to recruit.
+
+### My score looks wrong — what should I check before filing a ticket?
+
+1. Confirm you're querying the right token — scores can be tracked per-token if your deployment uses multiple SEP-41 tokens.
+2. Confirm the transaction that should have changed your score actually succeeded (check the emitted event, not just that you submitted it).
+3. Re-read [How is my credit score calculated?](#how-is-my-credit-score-calculated) above — most "bug" reports are the default-decay behavior described there.
+4. If it still looks wrong, open a GitHub issue with your account address, the transaction hash, and expected vs. actual score.
+
+---
+
+## Common Support Issues
+
+Questions collected from support channels that don't fit neatly into a single topic above.
+
+### "My transaction succeeded but nothing changed" — what happened?
+
+Almost always one of: (a) you queried a stale RPC node/cache, (b) you're looking at the wrong contract address (testnet vs. mainnet), or (c) the transaction succeeded but hit a no-op branch (e.g., calling `increase_stake()` with the same value). Check the emitted event for the call, not just the transaction status.
+
+### "I can't vouch for this borrower" — why?
+
+The three most common causes, in order of frequency:
+1. **Cooldown active** — you vouched/changed stake for this voucher within the last 24 hours (see [Is there a cooldown between vouches?](#is-there-a-cooldown-between-vouches)).
+2. **Duplicate vouch** — you already have an active vouch for this borrower/token pair; use `increase_stake()` instead of a new vouch.
+3. **Contract paused** — admins have paused the contract for maintenance or an incident; check [How do I pause the contract?](#how-do-i-pause-the-contract).
+
+### "The borrower defaulted but I wasn't slashed" — is that a bug?
+
+No — slashing is not automatic. Someone (an admin or any voucher) must call `initiate_slash_vote()`, and slashing only executes once quorum (50% of total stake voting to approve) is reached. If no one initiates a vote, no slash occurs.
+
+### Where do I go for something not covered here?
+
+- **Detailed guides**: [docs/](.) for deployment, monitoring, upgrades, and integration guides
+- **Bug reports**: [GitHub Issues](https://github.com/QuorumCredit/QuorumCredit/issues)
+- **Security issues**: See [How do I report security issues?](#how-do-i-report-security-issues) — do not file these publicly
+
+---
+
+## Keeping This FAQ Updated
+
+This FAQ is a living document, not a one-time write-up. To keep it useful:
+
+- When a question comes up more than twice in support channels (Discord, GitHub issues, email), it belongs here.
+- New Q&A entries should link to the detailed doc that has the full explanation rather than duplicating it inline — this FAQ should stay skimmable.
+- When a contract upgrade changes default values (loan limits, yield/slash bps, cooldown periods), search this file for the old numbers and update them in the same PR as the upgrade.
+- Stale answers are worse than missing answers — if you're not sure an answer is still accurate, flag it for review rather than leaving it as-is.
+
+---
+
 ## Still Have Questions?
 
 - **Documentation**: https://github.com/QuorumCredit/QuorumCredit/tree/main/docs
