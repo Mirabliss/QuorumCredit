@@ -249,4 +249,16 @@ EmergencyBypassNotAuthorised = 131,
     SplitBelowMinimum = 180,
     /// A vouch rotation was attempted before the cooling-off period elapsed.
     RotationCooldownActive = 181,
+    /// A large-loan approval proposal was not found for the given id.
+    LargeLoanApprovalNotFound = 182,
+    /// A large-loan approval proposal has passed its 48-hour expiration window.
+    LargeLoanApprovalExpired = 183,
+    /// A large-loan approval proposal has already collected enough signatures
+    /// and been executed; it cannot be signed or executed again.
+    LargeLoanApprovalAlreadyExecuted = 184,
+    /// The same admin attempted to sign a large-loan approval proposal twice.
+    DuplicateApprovalSigner = 185,
+    /// A large-loan approval was proposed for an amount at or below the
+    /// configured large-loan threshold, so it does not require multi-sig.
+    BelowLargeLoanThreshold = 186,
 }
