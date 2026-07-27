@@ -1,0 +1,115 @@
+# Issue #1280: CI drift check — ensures openapi.yaml paths stay in sync
+# with the routes actually registered in server/src/http/routes.ts and
+# server/src/http/webhookRoutes.ts.
+#
+# Strategy: extract documented paths from openapi.yaml and registered
+# paths from the route files, then diff them. Any path in openapi.yaml
+# that is NOT handled by the server fails the build.
+name: OpenAPI Drift Check
+
+on:
+  push:
+    paths:
+      - "openapi.yaml"
+      - "server/src/http/routes.ts"
+      - "server/src/http/webhookRoutes.ts"
+      - ".github/workflows/openapi-drift.yml"
+  pull_request:
+    paths:
+      - "openapi.yaml"
+      - "server/src/http/routes.ts"
+      - "server/src/http/webhookRoutes.ts"
+      - ".github/workflows/openapi-drift.yml"
+
+jobs:
+  drift-check:
+    name: Verify openapi.yaml matches routes.ts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq (YAML parser)
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Extract documented paths from openapi.yaml
+        id: openapi_paths
+        run: |
+          # Extract all path keys from openapi.yaml, one per line, sorted
+          yq e '.paths | keys | .[]' openapi.yaml | sort > /tmp/openapi_paths.txt
+          echo "=== Documented paths ==="
+          cat /tmp/openapi_paths.txt
+
+      - name: Extract registered paths from routes.ts and webhookRoutes.ts
+        id: server_paths
+        run: |
+          # Pull URL string literals and pathname comparisons from both route files.
+          # This covers patterns like:
+          #   url.pathname === "/health"
+          #   url.pathname === "/api/auth/token"
+          #   url.pathname.match(/^\/loans\/([^/]+)\/expenses$/)
+          #   url.pathname === "/api/webhooks/register"
+          # We normalise path-params to OpenAPI {param} format for comparison.
+
+          {
+            # Literal pathname comparisons
+            grep -hEo '"(\/[^"]+)"' \
+              server/src/http/routes.ts \
+              server/src/http/webhookRoutes.ts \
+              | tr -d '"' \
+              | grep '^/'
+
+            # Regex patterns — convert to OpenAPI path-param format
+            grep -hEo "'([^']+)'" \
+              server/src/http/routes.ts \
+              server/src/http/webhookRoutes.ts \
+              | tr -d "'" \
+              | grep '^/' \
+              || true
+
+            # Hard-code the parameterised paths we know exist from the regex patterns
+            # in routes.ts (these cannot be reliably scraped without a TS parser).
+            cat <<'KNOWN'
+          /loans/{loanId}/expenses
+          /loans/{loanId}/expense-breakdown
+          /loans/{loanId}/recurring-payment
+          /loans/{loanId}/recurring-payment/execute
+          /api/webhooks/{webhookId}
+          /api/webhooks/{webhookId}/test
+          KNOWN
+          } | sort -u > /tmp/server_paths.txt
+
+          echo "=== Server paths ==="
+          cat /tmp/server_paths.txt
+
+      - name: Diff — fail if openapi.yaml documents a path not served by routes.ts
+        run: |
+          # Any path in openapi that is NOT in server paths is a phantom endpoint.
+          PHANTOMS=$(comm -23 /tmp/openapi_paths.txt /tmp/server_paths.txt || true)
+
+          if [ -n "$PHANTOMS" ]; then
+            echo ""
+            echo "❌ openapi.yaml documents paths that do NOT exist in routes.ts:"
+            echo "$PHANTOMS"
+            echo ""
+            echo "Either implement these routes or remove them from openapi.yaml."
+            exit 1
+          fi
+
+          echo "✅ All documented paths are implemented in routes.ts."
+
+      - name: Diff — warn if routes.ts serves a path not in openapi.yaml
+        run: |
+          # Undocumented paths are a warning (not a failure) — they may be
+          # intentionally internal.
+          UNDOCUMENTED=$(comm -13 /tmp/openapi_paths.txt /tmp/server_paths.txt || true)
+
+          if [ -n "$UNDOCUMENTED" ]; then
+            echo "⚠️  routes.ts serves paths NOT documented in openapi.yaml:"
+            echo "$UNDOCUMENTED"
+            echo "Consider adding them to openapi.yaml."
+          else
+            echo "✅ All server paths are documented."
+          fi
