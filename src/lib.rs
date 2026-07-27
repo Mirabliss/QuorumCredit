@@ -4078,3 +4078,317 @@ impl QuorumCreditContract {
         recurring_payment::recurring_payment_success_rate(env, borrower)
     }
 }
+
+// ── Issue #1249: Community Treasury with Allocation Voting ────────────────────
+
+impl QuorumCreditContract {
+    /// Return the current community treasury balance in stroops.
+    pub fn get_treasury_balance(env: Env) -> i128 {
+        community_treasury::get_treasury_balance(&env)
+    }
+
+    /// Create a new treasury allocation proposal.
+    pub fn create_treasury_proposal(
+        env: Env,
+        proposer: Address,
+        recipient: Address,
+        amount: i128,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        community_treasury::create_proposal(&env, proposer, recipient, amount, description)
+    }
+
+    /// Vote on an active treasury proposal.
+    pub fn vote_treasury_proposal(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        community_treasury::vote_on_proposal(&env, voter, proposal_id, approve)
+    }
+
+    /// Finalise a treasury proposal after the voting period ends.
+    pub fn finalize_treasury_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        community_treasury::finalize_proposal(&env, proposal_id)
+    }
+
+    /// Admin-approve a large allocation proposal.
+    pub fn admin_approve_treasury_proposal(
+        env: Env,
+        admin_signers: Vec<Address>,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        community_treasury::admin_approve_proposal(&env, admin_signers, proposal_id)
+    }
+
+    /// Return a treasury proposal by ID.
+    pub fn get_treasury_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<community_treasury::TreasuryProposal> {
+        community_treasury::get_treasury_proposal(&env, proposal_id)
+    }
+
+    /// Return the monthly treasury spending report.
+    pub fn get_treasury_report(
+        env: Env,
+        month_id: u64,
+    ) -> Option<community_treasury::TreasuryReport> {
+        community_treasury::get_treasury_report(&env, month_id)
+    }
+}
+
+// ── Issue #1251: Reputation NFTs as Achievement Badges ────────────────────────
+
+impl QuorumCreditContract {
+    /// Evaluate and mint any newly earned badges for an address.
+    pub fn evaluate_badges(env: Env, address: Address) {
+        reputation_nft::evaluate_and_mint_badges(&env, &address);
+    }
+
+    /// Stake a reputation badge to activate its yield bonus.
+    pub fn stake_reputation_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Result<(), ContractError> {
+        reputation_nft::stake_badge(&env, owner, badge_type)
+    }
+
+    /// Unstake a reputation badge.
+    pub fn unstake_reputation_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Result<(), ContractError> {
+        reputation_nft::unstake_badge(&env, owner, badge_type)
+    }
+
+    /// List a badge for sale on the marketplace.
+    pub fn list_badge_for_sale(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+        price: i128,
+    ) -> Result<(), ContractError> {
+        reputation_nft::list_badge_for_sale(&env, owner, badge_type, price)
+    }
+
+    /// Delist a badge from the marketplace.
+    pub fn delist_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Result<(), ContractError> {
+        reputation_nft::delist_badge(&env, owner, badge_type)
+    }
+
+    /// Purchase a badge from the marketplace.
+    pub fn purchase_badge(
+        env: Env,
+        buyer: Address,
+        seller: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Result<(), ContractError> {
+        reputation_nft::purchase_badge(&env, buyer, seller, badge_type)
+    }
+
+    /// Return a badge record.
+    pub fn get_reputation_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Option<reputation_nft::Badge> {
+        reputation_nft::get_badge(&env, &owner, badge_type)
+    }
+
+    /// Return distribution stats for a badge type.
+    pub fn get_badge_stats(
+        env: Env,
+        badge_type: reputation_nft::BadgeType,
+    ) -> reputation_nft::BadgeStats {
+        reputation_nft::get_badge_stats(&env, badge_type)
+    }
+
+    /// Return total staked yield bonus for all badges held by owner (in BPS).
+    pub fn total_badge_yield_bonus(env: Env, owner: Address) -> i128 {
+        reputation_nft::total_staked_yield_bonus(&env, &owner)
+    }
+}
+
+// ── Issue #1253: Prediction Market for Interest Rates ────────────────────────
+
+impl QuorumCreditContract {
+    /// Create a new interest rate prediction market (admin only).
+    pub fn create_prediction_market(
+        env: Env,
+        admin_signers: Vec<Address>,
+        description: String,
+        rate_threshold_bps: u32,
+        closes_at: u64,
+        resolves_at: u64,
+    ) -> Result<u64, ContractError> {
+        prediction_market::create_market(
+            &env,
+            admin_signers,
+            description,
+            rate_threshold_bps,
+            closes_at,
+            resolves_at,
+        )
+    }
+
+    /// Place a prediction on an open market.
+    pub fn place_market_prediction(
+        env: Env,
+        participant: Address,
+        market_id: u64,
+        side: prediction_market::PredictionSide,
+        stake: i128,
+        token_addr: Address,
+    ) -> Result<(), ContractError> {
+        prediction_market::place_prediction(&env, participant, market_id, side, stake, token_addr)
+    }
+
+    /// Oracle resolves a prediction market (admin only).
+    pub fn resolve_prediction_market(
+        env: Env,
+        admin_signers: Vec<Address>,
+        market_id: u64,
+        outcome: bool,
+    ) -> Result<(), ContractError> {
+        prediction_market::resolve_market(&env, admin_signers, market_id, outcome)
+    }
+
+    /// Cancel a prediction market and allow refunds (admin only).
+    pub fn cancel_prediction_market(
+        env: Env,
+        admin_signers: Vec<Address>,
+        market_id: u64,
+    ) -> Result<(), ContractError> {
+        prediction_market::cancel_market(&env, admin_signers, market_id)
+    }
+
+    /// Claim payout for a winning prediction.
+    pub fn claim_prediction_payout(
+        env: Env,
+        participant: Address,
+        market_id: u64,
+        token_addr: Address,
+    ) -> Result<i128, ContractError> {
+        prediction_market::claim_payout(&env, participant, market_id, token_addr)
+    }
+
+    /// Return a prediction market by ID.
+    pub fn get_prediction_market(
+        env: Env,
+        market_id: u64,
+    ) -> Option<prediction_market::PredictionMarket> {
+        prediction_market::get_market(&env, market_id)
+    }
+
+    /// Return a participant's position in a market.
+    pub fn get_market_position(
+        env: Env,
+        market_id: u64,
+        participant: Address,
+    ) -> Option<prediction_market::MarketPosition> {
+        prediction_market::get_position(&env, market_id, &participant)
+    }
+
+    /// Return prediction accuracy stats for a participant.
+    pub fn get_prediction_accuracy(
+        env: Env,
+        participant: Address,
+    ) -> prediction_market::PredictionAccuracy {
+        prediction_market::get_prediction_accuracy(&env, &participant)
+    }
+}
+
+// ── Issue #1255: Interest Rate Options for Risk Management ────────────────────
+
+impl QuorumCreditContract {
+    /// Set the implied volatility used for option pricing (admin only).
+    pub fn set_option_implied_volatility(
+        env: Env,
+        admin_signers: Vec<Address>,
+        vol_bps_per_day: u32,
+    ) -> Result<(), ContractError> {
+        interest_rate_options::set_implied_volatility(&env, admin_signers, vol_bps_per_day)
+    }
+
+    /// Return the current implied volatility.
+    pub fn get_option_implied_volatility(env: Env) -> u32 {
+        interest_rate_options::get_implied_volatility(&env)
+    }
+
+    /// Buy an interest rate call or put option.
+    pub fn buy_interest_rate_option(
+        env: Env,
+        holder: Address,
+        option_type: interest_rate_options::OptionType,
+        strike_bps: u32,
+        notional: i128,
+        duration_secs: u64,
+        token_addr: Address,
+    ) -> Result<u64, ContractError> {
+        interest_rate_options::buy_option(
+            &env,
+            holder,
+            option_type,
+            strike_bps,
+            notional,
+            duration_secs,
+            token_addr,
+        )
+    }
+
+    /// Settle an expired interest rate option.
+    pub fn settle_interest_rate_option(
+        env: Env,
+        holder: Address,
+        option_id: u64,
+        token_addr: Address,
+    ) -> Result<i128, ContractError> {
+        interest_rate_options::settle_option(&env, holder, option_id, token_addr)
+    }
+
+    /// Cancel an active option before expiry and receive pro-rata refund.
+    pub fn cancel_interest_rate_option(
+        env: Env,
+        holder: Address,
+        option_id: u64,
+        token_addr: Address,
+    ) -> Result<i128, ContractError> {
+        interest_rate_options::cancel_option(&env, holder, option_id, token_addr)
+    }
+
+    /// Return an interest rate option by ID.
+    pub fn get_interest_rate_option(
+        env: Env,
+        option_id: u64,
+    ) -> Option<interest_rate_options::InterestRateOption> {
+        interest_rate_options::get_option(&env, option_id)
+    }
+
+    /// Return open interest statistics for a given option type.
+    pub fn get_option_open_interest(
+        env: Env,
+        option_type: interest_rate_options::OptionType,
+    ) -> interest_rate_options::OptionOpenInterest {
+        interest_rate_options::get_open_interest(&env, option_type)
+    }
+
+    /// Compute a preview of the option premium (read-only, no state change).
+    pub fn calculate_option_premium(
+        env: Env,
+        notional: i128,
+        strike_bps: u32,
+        duration_secs: u64,
+    ) -> i128 {
+        let days = (duration_secs / interest_rate_options::SECS_PER_DAY).max(1);
+        let vol = interest_rate_options::get_implied_volatility(&env);
+        interest_rate_options::calculate_premium(notional, strike_bps, days, vol)
+    }
+}
