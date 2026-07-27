@@ -807,6 +807,28 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
+
+    // ── Issue #1241: Governance Token with DAO Voting ─────────────────────────
+    /// holder → GovTokenBalance
+    GovTokenBalance(Address),
+    /// proposal_id → DaoProposal
+    DaoProposal(u64),
+    /// Monotonically increasing DAO proposal counter.
+    DaoProposalCounter,
+    /// delegator → GovDelegation
+    GovDelegation(Address),
+    /// Global governance participation metrics.
+    GovParticipationMetrics,
+
+    // ── Issue #1243: Dynamic Interest Rate Based on Utilization ───────────────
+    /// Global utilization-based rate configuration.
+    UtilizationRateConfig,
+    /// Most recent utilization rate snapshot.
+    UtilizationRateSnapshot,
+
+    // ── Issue #1245: Loyalty Program with Tiered Rewards ──────────────────────
+    /// user → LoyaltyRecord
+    LoyaltyRecord(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -3125,3 +3147,248 @@ pub struct RecurringPaymentConfig {
     pub failure_count: u32,
     pub retry_count: u32,
 }
+
+// ── Issue #1241: Governance Token with DAO Voting ─────────────────────────────
+
+/// Governance token record for a holder.
+/// 1 GOV token = 1 vote. Balances are tracked as i128 (smallest unit).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovTokenBalance {
+    /// The token holder.
+    pub holder: Address,
+    /// Balance of GOV tokens in smallest unit.
+    pub balance: i128,
+    /// Timestamp of first token receipt (used for participation metrics).
+    pub first_received_at: u64,
+    /// Total governance votes cast by this holder.
+    pub votes_cast: u32,
+}
+
+/// A DAO governance proposal that requires 1% of total GOV supply to create.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DaoProposal {
+    /// Unique proposal ID.
+    pub id: u64,
+    /// Address of the proposer.
+    pub proposer: Address,
+    /// Human-readable description of the proposal.
+    pub description: soroban_sdk::String,
+    /// Total votes FOR the proposal (in GOV tokens).
+    pub votes_for: i128,
+    /// Total votes AGAINST the proposal (in GOV tokens).
+    pub votes_against: i128,
+    /// Voters who have cast a vote: (voter → for/against).
+    pub voters: Vec<Address>,
+    /// Current status of the proposal.
+    pub status: DaoProposalStatus,
+    /// Timestamp when the proposal was created.
+    pub created_at: u64,
+    /// Timestamp when the voting period ends.
+    pub voting_ends_at: u64,
+    /// Timestamp when the proposal can be executed (after voting period + timelock).
+    pub executable_at: u64,
+}
+
+/// Status of a DAO governance proposal.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DaoProposalStatus {
+    /// Proposal is accepting votes.
+    Active,
+    /// Voting period ended; quorum met and majority voted FOR.
+    Passed,
+    /// Voting period ended; quorum not met or majority voted AGAINST.
+    Failed,
+    /// Proposal executed on-chain.
+    Executed,
+    /// Proposal cancelled by proposer or admin.
+    Cancelled,
+}
+
+/// Vote delegation record: a GOV holder delegates their voting power to another address.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovDelegation {
+    /// The delegating address.
+    pub delegator: Address,
+    /// The delegate receiving the voting power.
+    pub delegate: Address,
+    /// Timestamp when delegation was set.
+    pub set_at: u64,
+}
+
+/// Governance participation metrics tracked on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovParticipationMetrics {
+    /// Total GOV tokens minted (supply).
+    pub total_supply: i128,
+    /// Total number of DAO proposals created.
+    pub proposals_created: u64,
+    /// Total number of votes cast across all proposals.
+    pub total_votes_cast: u64,
+    /// Number of unique voters who have participated.
+    pub unique_voters: u32,
+}
+
+/// Minimum GOV token threshold to create a proposal, in basis points of total supply
+/// (100 = 1%).
+pub const GOV_PROPOSAL_THRESHOLD_BPS: i128 = 100;
+/// BPS denominator for GOV calculations.
+pub const GOV_BPS_DENOMINATOR: i128 = 10_000;
+/// Default DAO voting period in seconds (7 days).
+pub const DAO_VOTING_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
+/// Default DAO timelock after voting before execution, in seconds (2 days).
+pub const DAO_TIMELOCK_SECS: u64 = 2 * 24 * 60 * 60;
+/// Quorum: percentage of total supply that must vote, in basis points (1000 = 10%).
+pub const GOV_QUORUM_BPS: i128 = 1_000;
+
+// ── Issue #1243: Dynamic Interest Rate Based on Utilization ───────────────────
+
+/// Configuration for the utilization-based dynamic interest rate model.
+///
+/// Rate formula:
+///   - When utilization ≤ `kink_utilization_bps / 10_000`:
+///       rate = base_rate_bps
+///   - When utilization > `kink_utilization_bps / 10_000`:
+///       excess = utilization_bps - kink_utilization_bps
+///       rate = base_rate_bps + (excess * premium_slope_bps / 10_000)
+///   - Capped at `rate_cap_bps`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UtilizationRateConfig {
+    /// Whether utilization-based rate is active.
+    pub enabled: bool,
+    /// Base interest rate when utilization is low, in basis points (e.g. 200 = 2%).
+    pub base_rate_bps: i128,
+    /// Utilization percentage at which the premium slope kicks in, in basis points
+    /// (e.g. 8000 = 80%).
+    pub kink_utilization_bps: i128,
+    /// Slope of the interest rate above the kink, in basis points per basis-point of
+    /// excess utilization (e.g. 300 means each 1% excess utilization adds 3 bps to rate).
+    pub premium_slope_bps: i128,
+    /// Maximum possible interest rate, in basis points (rate cap, e.g. 5000 = 50%).
+    pub rate_cap_bps: i128,
+    /// Minimum possible interest rate, in basis points (rate floor, e.g. 50 = 0.5%).
+    pub rate_floor_bps: i128,
+}
+
+/// A snapshot of a utilization rate change, for tracking history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UtilizationRateSnapshot {
+    /// Ledger timestamp of this snapshot.
+    pub recorded_at: u64,
+    /// Utilization at this point, in basis points (0–10000).
+    pub utilization_bps: i128,
+    /// Effective rate at this point, in basis points.
+    pub effective_rate_bps: i128,
+    /// Total outstanding loan principal at this point, in stroops.
+    pub outstanding_loans: i128,
+    /// Total capital (vouched stake) at this point, in stroops.
+    pub total_capital: i128,
+}
+
+/// Default utilization rate configuration.
+pub fn default_utilization_rate_config() -> UtilizationRateConfig {
+    UtilizationRateConfig {
+        enabled: true,
+        base_rate_bps: 200,          // 2% base rate
+        kink_utilization_bps: 8_000, // kink at 80% utilization
+        premium_slope_bps: 300,      // 3 bps per 1% excess utilization above kink
+        rate_cap_bps: 5_000,         // cap at 50%
+        rate_floor_bps: 50,          // floor at 0.5%
+    }
+}
+
+// ── Issue #1245: Loyalty Program with Tiered Rewards ──────────────────────────
+
+/// Loyalty tier for a user based on total successful loan repayments.
+///
+/// Tiers:
+///   - Bronze: 0–4 repayments
+///   - Silver: 5–19 repayments
+///   - Gold:   20+ repayments
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoyaltyTier {
+    /// 0–4 successful repayments.
+    Bronze,
+    /// 5–19 successful repayments.
+    Silver,
+    /// 20+ successful repayments.
+    Gold,
+}
+
+/// Benefits associated with each loyalty tier.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoyaltyBenefits {
+    /// Interest rate discount in basis points (e.g. 50 = 0.5% reduction).
+    pub interest_rate_discount_bps: i128,
+    /// Protocol fee waiver in basis points (e.g. 10000 = 100% waiver = full fee waiver).
+    pub fee_waiver_bps: u32,
+    /// Minimum stake discount in basis points (e.g. 500 = 5% lower minimum stake).
+    pub min_stake_discount_bps: u32,
+    /// Annual anniversary bonus in basis points (e.g. 100 = 1% bonus on next repayment yield).
+    pub anniversary_bonus_bps: u32,
+}
+
+/// A user's loyalty program record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoyaltyRecord {
+    /// User address.
+    pub user: Address,
+    /// Current loyalty tier.
+    pub tier: LoyaltyTier,
+    /// Number of successful loan repayments.
+    pub repayment_count: u32,
+    /// Timestamp of account registration / first loan.
+    pub member_since: u64,
+    /// Timestamp of last tier upgrade.
+    pub last_tier_upgrade_at: u64,
+    /// Timestamp of last anniversary bonus claimed.
+    pub last_anniversary_bonus_at: u64,
+    /// Total loyalty benefits earned (cumulative interest saved, in stroops).
+    pub total_benefits_earned: i128,
+}
+
+/// Repayment thresholds for tier advancement.
+pub const LOYALTY_SILVER_THRESHOLD: u32 = 5;
+pub const LOYALTY_GOLD_THRESHOLD: u32 = 20;
+
+/// Default Bronze tier benefits.
+pub fn loyalty_bronze_benefits() -> LoyaltyBenefits {
+    LoyaltyBenefits {
+        interest_rate_discount_bps: 0,
+        fee_waiver_bps: 0,
+        min_stake_discount_bps: 0,
+        anniversary_bonus_bps: 0,
+    }
+}
+
+/// Default Silver tier benefits.
+pub fn loyalty_silver_benefits() -> LoyaltyBenefits {
+    LoyaltyBenefits {
+        interest_rate_discount_bps: 50,   // 0.5% interest discount
+        fee_waiver_bps: 2_500,            // 25% fee waiver
+        min_stake_discount_bps: 500,      // 5% lower minimum stake
+        anniversary_bonus_bps: 50,        // 0.5% anniversary bonus
+    }
+}
+
+/// Default Gold tier benefits.
+pub fn loyalty_gold_benefits() -> LoyaltyBenefits {
+    LoyaltyBenefits {
+        interest_rate_discount_bps: 150,  // 1.5% interest discount
+        fee_waiver_bps: 10_000,           // 100% fee waiver
+        min_stake_discount_bps: 1_500,    // 15% lower minimum stake
+        anniversary_bonus_bps: 150,       // 1.5% anniversary bonus
+    }
+}
+
+/// Anniversary period in seconds (365 days).
+pub const LOYALTY_ANNIVERSARY_PERIOD_SECS: u64 = 365 * 24 * 60 * 60;
