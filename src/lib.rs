@@ -4077,6 +4077,142 @@ impl QuorumCreditContract {
     pub fn recurring_payment_success_rate(env: Env, borrower: Address) -> u32 {
         recurring_payment::recurring_payment_success_rate(env, borrower)
     }
+
+    // ── Issue #1241: Governance Token with DAO Voting ─────────────────────────
+
+    /// Mint GOV tokens to a recipient. Admin-only.
+    pub fn mint_gov_tokens(
+        env: Env,
+        admin_signers: Vec<Address>,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        governance_token::mint_gov_tokens(env, admin_signers, recipient, amount)
+    }
+
+    /// Transfer GOV tokens from sender to recipient.
+    pub fn transfer_gov_tokens(
+        env: Env,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        governance_token::transfer_gov_tokens(env, from, to, amount)
+    }
+
+    /// Delegate voting power to another address.
+    /// Pass `delegate == delegator` to revoke an existing delegation.
+    pub fn delegate_gov_vote(
+        env: Env,
+        delegator: Address,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        governance_token::delegate_gov_vote(env, delegator, delegate)
+    }
+
+    /// Create a DAO governance proposal. Requires ≥ 1% of total GOV supply.
+    pub fn create_dao_proposal(
+        env: Env,
+        proposer: Address,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        governance_token::create_dao_proposal(env, proposer, description)
+    }
+
+    /// Vote on a DAO governance proposal. 1 GOV token = 1 vote.
+    pub fn vote_on_proposal(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        vote_for: bool,
+    ) -> Result<(), ContractError> {
+        governance_token::vote_on_proposal(env, voter, proposal_id, vote_for)
+    }
+
+    /// Finalise a DAO proposal after the voting period ends.
+    pub fn finalize_dao_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<DaoProposalStatus, ContractError> {
+        governance_token::finalize_dao_proposal(env, proposal_id)
+    }
+
+    /// Get the GOV token balance for a holder.
+    pub fn get_gov_balance(env: Env, holder: Address) -> GovTokenBalance {
+        governance_token::get_gov_balance(env, holder)
+    }
+
+    /// Get a DAO proposal by ID.
+    pub fn get_dao_proposal(env: Env, proposal_id: u64) -> Option<DaoProposal> {
+        governance_token::get_dao_proposal(env, proposal_id)
+    }
+
+    /// Get governance participation metrics.
+    pub fn get_gov_metrics(env: Env) -> GovParticipationMetrics {
+        governance_token::get_gov_metrics(env)
+    }
+
+    /// Get the vote delegation record for a holder.
+    pub fn get_gov_delegation(env: Env, delegator: Address) -> Option<GovDelegation> {
+        governance_token::get_gov_delegation(env, delegator)
+    }
+
+    // ── Issue #1243: Dynamic Interest Rate Based on Utilization ───────────────
+
+    /// Set the utilization-based interest rate configuration. Admin-only.
+    pub fn set_utilization_rate_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: UtilizationRateConfig,
+    ) -> Result<(), ContractError> {
+        dynamic_interest::set_utilization_rate_config(env, admin_signers, config)
+    }
+
+    /// Get the current effective interest rate based on protocol utilization.
+    pub fn get_current_utilization_rate(env: Env) -> i128 {
+        dynamic_interest::get_current_utilization_rate(env)
+    }
+
+    /// Snapshot the current utilization and effective rate for tracking.
+    pub fn snapshot_utilization_rate(env: Env) -> Result<UtilizationRateSnapshot, ContractError> {
+        dynamic_interest::snapshot_utilization_rate(env)
+    }
+
+    /// Get the most recent utilization rate snapshot.
+    pub fn get_utilization_rate_snapshot(env: Env) -> Option<UtilizationRateSnapshot> {
+        dynamic_interest::get_utilization_rate_snapshot(env)
+    }
+
+    /// Get the utilization rate configuration.
+    pub fn get_utilization_rate_config(env: Env) -> UtilizationRateConfig {
+        dynamic_interest::get_utilization_rate_config(env)
+    }
+
+    // ── Issue #1245: Loyalty Program with Tiered Rewards ──────────────────────
+
+    /// Get the loyalty tier for a user.
+    pub fn get_loyalty_tier(env: Env, user: Address) -> LoyaltyTier {
+        loyalty::get_loyalty_tier(env, user)
+    }
+
+    /// Get the full loyalty record for a user.
+    pub fn get_loyalty_record(env: Env, user: Address) -> LoyaltyRecord {
+        loyalty::get_loyalty_record(env, user)
+    }
+
+    /// Get the loyalty benefits package for a user's current tier.
+    pub fn get_loyalty_benefits(env: Env, user: Address) -> LoyaltyBenefits {
+        loyalty::get_loyalty_benefits(env, user)
+    }
+
+    /// Claim the annual anniversary loyalty bonus. Returns bonus in basis points.
+    pub fn claim_anniversary_bonus(
+        env: Env,
+        user: Address,
+        loan_principal: i128,
+    ) -> Result<u32, ContractError> {
+        loyalty::claim_anniversary_bonus(env, user, loan_principal)
+    }
 }
 
 // ── Issue #1249: Community Treasury with Allocation Voting ────────────────────
