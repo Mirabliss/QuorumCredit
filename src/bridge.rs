@@ -160,7 +160,7 @@ fn bridge_token_inner(
     let prev_balance: i128 = env
         .storage()
         .persistent()
-        .get(&DataKey::BridgedTokens(source_token.clone()))
+        .get(&DataKey::BridgedTokenBalance(source_token.clone()))
         .unwrap_or(0i128);
 
     let new_balance = prev_balance
@@ -169,7 +169,7 @@ fn bridge_token_inner(
 
     env.storage()
         .persistent()
-        .set(&DataKey::BridgedTokens(source_token.clone()), &new_balance);
+        .set(&DataKey::BridgedTokenBalance(source_token.clone()), &new_balance);
 
     env.events().publish(
         (symbol_short!("bridge"), symbol_short!("token_in")),
@@ -183,7 +183,7 @@ fn bridge_token_inner(
 pub fn get_bridged_token_balance(env: Env, token_addr: Address) -> i128 {
     env.storage()
         .persistent()
-        .get(&DataKey::BridgedTokens(token_addr))
+        .get(&DataKey::BridgedTokenBalance(token_addr))
         .unwrap_or(0i128)
 }
 
@@ -371,14 +371,14 @@ fn repay_with_swap_inner(
     let prev_bal: i128 = env
         .storage()
         .persistent()
-        .get(&DataKey::BridgedTokens(payment_token.clone()))
+        .get(&DataKey::BridgedTokenBalance(payment_token.clone()))
         .unwrap_or(0i128);
     let new_bal = prev_bal
         .checked_add(payment_amount)
         .unwrap_or(prev_bal);
     env.storage()
         .persistent()
-        .set(&DataKey::BridgedTokens(payment_token.clone()), &new_bal);
+        .set(&DataKey::BridgedTokenBalance(payment_token.clone()), &new_bal);
 
     env.events().publish(
         (symbol_short!("bridge"), symbol_short!("swap")),
