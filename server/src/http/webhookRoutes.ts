@@ -5,11 +5,18 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { 
-  webhookRegistry, 
+import { request as httpsRequest } from "node:https";
+import { request as httpRequest } from "node:http";
+import {
+  webhookRegistry,
   validateIncomingWebhook,
   createSignedWebhookRequest,
 } from "../webhooks/signature.js";
+import {
+  webhookDeliveryService,
+  SUBSCRIBABLE_EVENTS,
+  type WebhookSender,
+} from "../webhooks/delivery.js";
 
 export interface WebhookRoutesContext {
   webhookSecret?: string; // Secret for receiving webhooks (if this service receives webhooks)
@@ -42,8 +49,26 @@ export function handleWebhookRequest(
   const url = new URL(req.url ?? "", "http://internal");
 
   // Webhook registration endpoints (protected in production)
-  if (req.method === "POST" && url.pathname === "/api/webhooks/register") {
+  if (
+    req.method === "POST" &&
+    (url.pathname === "/api/webhooks/register" ||
+      url.pathname === "/webhooks/subscribe" ||
+      url.pathname === "/api/webhooks/subscribe")
+  ) {
     handleRegisterWebhook(req, res);
+    return;
+  }
+
+  // Delivery success-rate tracking for a subscription.
+  if (req.method === "GET" && url.pathname.match(/^\/api\/webhooks\/[^/]+\/deliveries$/)) {
+    const id = url.pathname.split("/")[3] as string;
+    handleListDeliveries(res, id);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname.match(/^\/api\/webhooks\/[^/]+\/stats$/)) {
+    const id = url.pathname.split("/")[3] as string;
+    handleDeliveryStats(res, id);
     return;
   }
 
@@ -116,8 +141,12 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse):
       return;
     }
 
-    // Validate events
+    // Validate events. `SUBSCRIBABLE_EVENTS` are the canonical real-time
+    // event names (loan_issued, payment_received, loan_completed,
+    // default_occurred); the dot-separated names are kept for backward
+    // compatibility with existing registrations.
     const validEvents = [
+      ...SUBSCRIBABLE_EVENTS,
       "loan.requested",
       "loan.disbursed",
       "loan.repaid",
@@ -281,6 +310,101 @@ function handleDeleteWebhook(_req: IncomingMessage, res: ServerResponse, id: str
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "internal server error" }));
   }
+}
+
+/**
+ * List delivery attempts recorded for a webhook subscription.
+ */
+function handleListDeliveries(res: ServerResponse, id: string): void {
+  try {
+    const webhook = webhookRegistry.getWebhook(id);
+    if (!webhook) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(webhookDeliveryService.listDeliveries(id)));
+  } catch (error) {
+    console.error("Error listing webhook deliveries:", error);
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "internal server error" }));
+  }
+}
+
+/**
+ * Report the delivery success rate for a webhook subscription, per the
+ * "track webhook delivery success rates" requirement.
+ */
+function handleDeliveryStats(res: ServerResponse, id: string): void {
+  try {
+    const webhook = webhookRegistry.getWebhook(id);
+    if (!webhook) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(webhookDeliveryService.stats(id)));
+  } catch (error) {
+    console.error("Error computing webhook delivery stats:", error);
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "internal server error" }));
+  }
+}
+
+/**
+ * Real HTTP(S) sender used to actually deliver webhook payloads to
+ * subscriber URLs. Kept separate from WebhookDeliveryService so the retry
+ * logic there stays transport-agnostic and unit-testable.
+ */
+const sendWebhookOverHttp: WebhookSender = (url, headers, body) => {
+  return new Promise((resolve) => {
+    const target = new URL(url);
+    const transport = target.protocol === "http:" ? httpRequest : httpsRequest;
+    const payload = JSON.stringify(body);
+
+    const req = transport(
+      {
+        hostname: target.hostname,
+        port: target.port || (target.protocol === "http:" ? 80 : 443),
+        path: `${target.pathname}${target.search}`,
+        method: "POST",
+        headers: { ...headers, "content-length": Buffer.byteLength(payload) },
+        timeout: 10_000,
+      },
+      (res) => {
+        res.on("data", () => undefined);
+        res.on("end", () => {
+          const statusCode = res.statusCode ?? 0;
+          resolve({ ok: statusCode >= 200 && statusCode < 300, statusCode });
+        });
+      }
+    );
+
+    req.on("timeout", () => req.destroy(new Error("webhook delivery timed out")));
+    req.on("error", (error) => resolve({ ok: false, error: error.message }));
+    req.write(payload);
+    req.end();
+  });
+};
+
+/**
+ * Dispatch an event to every enabled subscriber registered for it, with
+ * exponential-backoff retry (max 5 retries) via WebhookDeliveryService.
+ * This is the entry point loan-lifecycle code (issuance, repayment,
+ * completion, default) should call in place of relying on third-party apps
+ * polling for status.
+ */
+export async function dispatchEventToSubscribers(event: string, data: unknown): Promise<void> {
+  const subscribers = webhookRegistry.getWebhooksForEvent(event);
+  await Promise.all(
+    subscribers.map((webhook) =>
+      webhookDeliveryService.deliver(webhook, event, data, sendWebhookOverHttp)
+    )
+  );
 }
 
 /**

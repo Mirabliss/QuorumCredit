@@ -2,7 +2,8 @@ extern crate alloc;
 
 use crate::errors::ContractError;
 use crate::helpers::{
-    has_active_loan, paginate_vec, require_admin_approval, require_allowed_token, require_not_thawing, require_reads_allowed, require_positive_amount,
+    bump_instance, bump_persistent, has_active_loan, paginate_vec, require_admin_approval,
+    require_allowed_token, require_not_thawing, require_reads_allowed, require_positive_amount,
 };
 use crate::types::{
     BatchVouchResult, BorrowerExposure, BridgeRecord, ChainExposure, DataKey, PortfolioRiskReport,
@@ -306,6 +307,22 @@ fn commit_vouch(
         .persistent()
         .set(&DataKey::VoucherHistory(voucher.clone()), &history);
 
+    // Issue #1289: Register this address in the global VoucherRegistry on their first-ever vouch.
+    // The registry stores each distinct voucher address exactly once.
+    {
+        let mut registry: soroban_sdk::Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherRegistry)
+            .unwrap_or(soroban_sdk::Vec::new(env));
+        if !registry.iter().any(|a| a == voucher) {
+            registry.push_back(voucher.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::VoucherRegistry, &registry);
+        }
+    }
+
     let timestamp = env.ledger().timestamp();
 
     vouches.push_back(VouchRecord {
@@ -321,6 +338,10 @@ fn commit_vouch(
     env.storage()
         .persistent()
         .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    // Issue #1285: extend TTL so vouches survive for the full loan lifecycle.
+    bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
+    bump_instance(&env);
 
     // Invalidate the weighted stake cache for O(1) eligibility check
     crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &token);
@@ -512,6 +533,10 @@ pub fn increase_stake(
         .persistent()
         .set(&DataKey::Vouches(borrower.clone()), &vouches);
 
+    // Issue #1285: keep vouches live on the ledger.
+    bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
+    bump_instance(&env);
+
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
 
@@ -572,6 +597,9 @@ pub fn decrease_stake(
         
         // Invalidate the weighted stake cache
         invalidate_weighted_stake_cache(&env, &borrower, &token);
+
+        // Issue #1285: extend TTL on the queued-withdrawal write path.
+        bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
         
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_rec.token, false, 0);
     }
@@ -596,6 +624,10 @@ pub fn decrease_stake(
 
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
+
+    // Issue #1285: extend TTL on decrease_stake write path.
+    bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
+    bump_instance(&env);
 
     token_client.transfer(&env.current_contract_address(), &voucher, &amount);
 
@@ -645,6 +677,9 @@ pub fn withdraw_vouch(
         
         // Invalidate the weighted stake cache
         crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &vouch_token);
+
+        // Issue #1285: extend TTL on withdraw_vouch queued path.
+        bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
         
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_token, false, 0);
     }
@@ -707,7 +742,7 @@ pub fn request_withdrawal(
     if priority_fee > 0 {
         let max_fee = vouch_rec
             .stake
-            .checked_mul(crate::types::MAX_PRIORITY_FEE_BPS)
+            .checked_mul(crate::helpers::config(&env).max_priority_fee_cap_bps)
             .ok_or(ContractError::ArithmeticError)?
             / BPS_DENOMINATOR;
         if priority_fee > max_fee {
@@ -1046,6 +1081,10 @@ fn queue_withdrawal_internal(
     env.storage()
         .persistent()
         .set(&DataKey::WithdrawalQueue(borrower.clone()), &queue);
+
+    // Issue #1285: keep the withdrawal queue live so it survives until
+    // process_withdrawal_queue drains it at loan resolution.
+    bump_persistent(&env, &DataKey::WithdrawalQueue(borrower.clone()));
 
     env.events().publish(
         (symbol_short!("wq"), symbol_short!("queued")),

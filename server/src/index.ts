@@ -8,6 +8,7 @@ import { Bridge } from "./bridge/bridge.js";
 import { attachLoanSocketServer } from "./ws/loanSocketServer.js";
 import { attachMetricsWsServer } from "./ws/metricsWsServer.js";
 import { handleHttpRequest } from "./http/routes.js";
+import { metrics } from "./http/metricsRegistry.js";
 import * as insuranceMarketplace from "./insurance-marketplace.js";
 
 export function buildBus(redisUrl: string | undefined): PubSubBus {
@@ -27,9 +28,37 @@ async function main(): Promise<void> {
   const bus = buildBus(config.redisUrl);
   const store = new EventStore(config.indexerDbPath);
 
-  const httpServer = createServer((req, res) =>
-    handleHttpRequest(req, res, { authSecret: config.authSecret, tokenTtlSeconds: config.tokenTtlSeconds })
-  );
+  const bridge = new Bridge({
+    bus,
+    store,
+    instanceId: config.instanceId,
+    pollIntervalMs: config.bridgePollIntervalMs,
+    leaderLockTtlMs: config.leaderLockTtlMs,
+    costAllocation: config.costAllocation,
+    partitionGuard: config.partitionGuard,
+  });
+
+  const httpServer = createServer((req, res) => {
+    // Issue #1231: request-count/error-rate/latency instrumentation, so a canary
+    // rollout controller (scripts/canary_deploy.sh) can poll /metrics on a canary
+    // instance and compare it against the stable fleet before shifting more traffic.
+    const startedAt = Date.now();
+    res.on("finish", () => {
+      const durationMs = Date.now() - startedAt;
+      metrics.incCounter("qc_http_requests_total");
+      metrics.incCounter("qc_http_request_duration_ms_sum", durationMs);
+      metrics.incCounter("qc_http_request_duration_ms_count");
+      if (res.statusCode >= 500) metrics.incCounter("qc_http_request_errors_total");
+    });
+
+    handleHttpRequest(req, res, {
+      authSecret: config.authSecret,
+      tokenTtlSeconds: config.tokenTtlSeconds,
+      costAllocator: bridge.costAllocator,
+      partitionGuard: bridge.partitionGuard,
+      serviceVersion: config.serviceVersion,
+    });
+  });
 
   attachLoanSocketServer({
     httpServer,
@@ -47,13 +76,6 @@ async function main(): Promise<void> {
     connectionQueueMax: config.connectionQueueMax,
   });
 
-  const bridge = new Bridge({
-    bus,
-    store,
-    instanceId: config.instanceId,
-    pollIntervalMs: config.bridgePollIntervalMs,
-    leaderLockTtlMs: config.leaderLockTtlMs,
-  });
   bridge.start();
 
   httpServer.listen(config.port, () => {

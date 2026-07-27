@@ -69,6 +69,25 @@ pub const VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
 /// Issue #1146: maximum number of items returned by a single page of any
 /// `*_page` read function, regardless of the caller-requested `limit`.
 pub const MAX_PAGE_SIZE: u32 = 50;
+// ── Issue #1285: Soroban Persistent Storage TTL Constants ─────────────────────
+//
+// Soroban persistent entries have a TTL measured in ledgers (1 ledger ≈ 5 s).
+// Once the TTL lapses the entry is archived off the live ledger; any subsequent
+// read will trap unless the entry is restored first.  We therefore extend_ttl
+// on every hot write path so long-lived entries never silently disappear.
+//
+// Ledger rate: ~17_280 ledgers / day (5 s / ledger).
+//
+/// extend_ttl threshold for loan/vouch/queue entries (~30 days in ledgers).
+/// If the current TTL is already above this we skip the extend to save CPU.
+pub const PERSISTENT_TTL_THRESHOLD_LEDGERS: u32 = 30 * 17_280; // 518_400
+/// Target TTL for loan/vouch/queue entries after extension (~1 year in ledgers).
+pub const PERSISTENT_TTL_TARGET_LEDGERS: u32 = 365 * 17_280; // 6_307_200
+/// Target TTL for the instance storage (config/admins/paused/etc.) (~1 year).
+pub const INSTANCE_TTL_TARGET_LEDGERS: u32 = 365 * 17_280; // 6_307_200
+/// Threshold for instance TTL bumps (~30 days).
+pub const INSTANCE_TTL_THRESHOLD_LEDGERS: u32 = 30 * 17_280; // 518_400
+
 /// Default governance voting period for slash-threshold proposals, in seconds (7 days).
 pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum delay before a timelocked governance action may be executed, in seconds (24 hours).
@@ -807,26 +826,15 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
-    // ── Issue #1074: Reentrancy Guard ─────────────────────────────────────────
-    /// u32 reentrancy guard flag: 0 = unlocked, 1 = locked
-    ReentrancyGuard,
-    // ── Issue #1075: Non-Stellar Tokens via Bridge ────────────────────────────
-    /// token → i128 balance of bridged tokens held in contract
-    BridgedTokenBalance(Address),
-    /// token → TokenBridgeMetadata containing bridge information
-    TokenBridgeMetadata(Address),
-    /// token → i128 oracle price in basis points (e.g., 10_000 = 1:1 parity)
-    BridgeTokenPrice(Address),
-    // ── Issue #1076: Token Swap on Repayment Mismatch ──────────────────────────
-    /// loan_id → TokenSwapConfig for the loan's allowed swap tokens
-    LoanTokenSwapConfig(u64),
-    /// DEX contract address for token swaps
-    DexContractAddress,
-    // ── Issue #1077: Dynamic Yield Based on Token Liquidity ───────────────────
-    /// token → u32 liquidity tier (0-3, where 0 = most liquid, 3 = least liquid)
-    TokenLiquidityTier(Address),
-    /// Vec<i128> yield bonus BPS for each liquidity tier (indices 0-3)
-    LiquidityTierYieldBonuses,
+    // ── Liquidity Mining Campaigns (Issue #1257) ─────────────────────────────
+    /// campaign_id → MiningCampaign
+    MiningCampaign(u64),
+    /// Monotonically increasing campaign ID counter
+    MiningCampaignCounter,
+    /// (campaign_id, participant) → i128 reward claimed so far
+    MiningClaimed(u64, Address),
+    /// (campaign_id, participant) → i128 total participation (stake-seconds accumulated)
+    MiningParticipation(u64, Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -843,6 +851,64 @@ pub struct CollateralPool {
     pub borrower: Option<Address>,
     pub active: bool,
     pub created_at: u64,
+}
+
+// ── Liquidity Mining (Issue #1257) ────────────────────────────────────────────
+
+/// Campaign type governing how rewards are distributed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MiningCampaignType {
+    /// Rewards proportional to each participant's stake contribution.
+    ProportionalStake,
+    /// Flat reward per unique participating voucher (equal-split).
+    FlatPerVoucher,
+    /// Rewards proportional to voucher reputation score.
+    ReputationWeighted,
+}
+
+/// Lifecycle state of a liquidity mining campaign.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MiningCampaignStatus {
+    /// Accepting participants; rewards not yet claimable.
+    Active,
+    /// Campaign ended; rewards are claimable.
+    Ended,
+    /// Campaign was cancelled before ending; no rewards disbursed.
+    Cancelled,
+}
+
+/// Issue #1257: A liquidity mining campaign record stored on-chain.
+///
+/// Campaigns bootstrap liquidity by distributing rewards from `incentive_pool`
+/// to vouchers who participate during `[start_timestamp, end_timestamp)`.
+/// The reward each participant earns depends on the `campaign_type`.
+#[contracttype]
+#[derive(Clone)]
+pub struct MiningCampaign {
+    /// Unique campaign identifier (1-indexed monotonic counter).
+    pub campaign_id: u64,
+    /// Creator/sponsor of the campaign (must be an admin).
+    pub creator: Address,
+    /// Token used for both participation tracking and reward payout.
+    pub token: Address,
+    /// Total reward tokens deposited into the campaign pool, in stroops.
+    pub incentive_pool: i128,
+    /// Reward tokens already distributed so far, in stroops.
+    pub distributed: i128,
+    /// Campaign start ledger timestamp (inclusive).
+    pub start_timestamp: u64,
+    /// Campaign end ledger timestamp (exclusive).
+    pub end_timestamp: u64,
+    /// Distribution algorithm.
+    pub campaign_type: MiningCampaignType,
+    /// Lifecycle status.
+    pub status: MiningCampaignStatus,
+    /// Total accumulated participation weight (stake-seconds or voucher count).
+    pub total_participation: i128,
+    /// Number of unique participants who have recorded participation.
+    pub participant_count: u64,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -1569,6 +1635,10 @@ pub struct Config {
     /// Index 0 = Tier 0 (most liquid, no bonus), 3 = Tier 3 (illiquid, max bonus).
     /// Example: [0, 50, 150, 300] means tier-3 tokens earn +300 bps extra yield.
     pub liquidity_tier_yield_bonus: Vec<i128>,
+    /// Issue #1287: Governance-adjustable cap on withdrawal-queue priority fees,
+    /// in basis points of the voucher's own stake (default 1_000 = 10%).
+    /// Replaces the compile-time constant `MAX_PRIORITY_FEE_BPS`.
+    pub max_priority_fee_cap_bps: i128,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -3146,97 +3216,247 @@ pub struct RecurringPaymentConfig {
     pub retry_count: u32,
 }
 
-// ── Issue #1074: Reentrancy Guard ─────────────────────────────────────────────
+// ── Issue #1241: Governance Token with DAO Voting ─────────────────────────────
 
-/// Reentrancy guard state: 0 = unlocked, 1 = locked.
-/// Used to prevent malicious token fallbacks from calling back into the contract.
-pub const REENTRANCY_GUARD_UNLOCKED: u32 = 0;
-pub const REENTRANCY_GUARD_LOCKED: u32 = 1;
-
-// ── Issue #1075: Non-Stellar Tokens via Bridge ────────────────────────────────
-
-/// Metadata for a bridged token from another chain.
+/// Governance token record for a holder.
+/// 1 GOV token = 1 vote. Balances are tracked as i128 (smallest unit).
 #[contracttype]
-#[derive(Clone)]
-pub struct TokenBridgeMetadata {
-    /// The token address on this chain
-    pub token_address: Address,
-    /// Bridge contract address that handles the token
-    pub bridge_contract: Address,
-    /// Source token address on the origin chain
-    pub source_token_address: Address,
-    /// Origin chain ID (0 = native chain, >0 = external chain)
-    pub source_chain_id: u32,
-    /// Price per token relative to primary token (1.0 = 1:1), in basis points
-    pub price_bps: i128,
-    /// Timestamp when the price was last updated
-    pub price_updated_at: u64,
-    /// Whether this token is currently enabled for lending/borrowing
-    pub enabled: bool,
-    /// Maximum total balance allowed to be bridged (in stroops), 0 = unlimited
-    pub max_balance_cap: i128,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovTokenBalance {
+    /// The token holder.
+    pub holder: Address,
+    /// Balance of GOV tokens in smallest unit.
+    pub balance: i128,
+    /// Timestamp of first token receipt (used for participation metrics).
+    pub first_received_at: u64,
+    /// Total governance votes cast by this holder.
+    pub votes_cast: u32,
 }
 
-// ── Issue #1076: Token Swap on Repayment Mismatch ────────────────────────────
-
-/// Configuration for token swaps allowed during loan repayment.
+/// A DAO governance proposal that requires 1% of total GOV supply to create.
 #[contracttype]
-#[derive(Clone)]
-pub struct TokenSwapConfig {
-    /// Loan ID this configuration applies to
-    pub loan_id: u64,
-    /// Primary loan token (the token loan was disbursed in)
-    pub primary_token: Address,
-    /// Alternative tokens the borrower is allowed to repay with
-    pub allowed_swap_tokens: Vec<Address>,
-    /// DEX contract address for performing swaps
-    pub dex_contract: Address,
-    /// Maximum slippage allowed in basis points (500 = 5%)
-    pub max_slippage_bps: i128,
-    /// Whether swaps are enabled for this loan
-    pub swaps_enabled: bool,
-    /// Timestamp when swap configuration was created
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DaoProposal {
+    /// Unique proposal ID.
+    pub id: u64,
+    /// Address of the proposer.
+    pub proposer: Address,
+    /// Human-readable description of the proposal.
+    pub description: soroban_sdk::String,
+    /// Total votes FOR the proposal (in GOV tokens).
+    pub votes_for: i128,
+    /// Total votes AGAINST the proposal (in GOV tokens).
+    pub votes_against: i128,
+    /// Voters who have cast a vote: (voter → for/against).
+    pub voters: Vec<Address>,
+    /// Current status of the proposal.
+    pub status: DaoProposalStatus,
+    /// Timestamp when the proposal was created.
     pub created_at: u64,
+    /// Timestamp when the voting period ends.
+    pub voting_ends_at: u64,
+    /// Timestamp when the proposal can be executed (after voting period + timelock).
+    pub executable_at: u64,
 }
 
-// ── Issue #1077: Dynamic Yield Based on Token Liquidity ───────────────────────
-
-/// Liquidity tier for a token, ranging from most liquid (0) to least liquid (3).
+/// Status of a DAO governance proposal.
 #[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum LiquidityTier {
-    /// Highly liquid tokens (e.g., XLM, USDC) - tier 0
-    HighLiquidity = 0,
-    /// Medium-high liquidity tokens - tier 1
-    MediumHighLiquidity = 1,
-    /// Medium-low liquidity tokens - tier 2
-    MediumLowLiquidity = 2,
-    /// Low liquidity tokens - tier 3
-    LowLiquidity = 3,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DaoProposalStatus {
+    /// Proposal is accepting votes.
+    Active,
+    /// Voting period ended; quorum met and majority voted FOR.
+    Passed,
+    /// Voting period ended; quorum not met or majority voted AGAINST.
+    Failed,
+    /// Proposal executed on-chain.
+    Executed,
+    /// Proposal cancelled by proposer or admin.
+    Cancelled,
 }
 
-impl LiquidityTier {
-    /// Convert from u32 to LiquidityTier
-    pub fn from_tier(tier: u32) -> Option<Self> {
-        match tier {
-            0 => Some(LiquidityTier::HighLiquidity),
-            1 => Some(LiquidityTier::MediumHighLiquidity),
-            2 => Some(LiquidityTier::MediumLowLiquidity),
-            3 => Some(LiquidityTier::LowLiquidity),
-            _ => None,
-        }
-    }
+/// Vote delegation record: a GOV holder delegates their voting power to another address.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovDelegation {
+    /// The delegating address.
+    pub delegator: Address,
+    /// The delegate receiving the voting power.
+    pub delegate: Address,
+    /// Timestamp when delegation was set.
+    pub set_at: u64,
+}
 
-    /// Convert LiquidityTier to u32
-    pub fn to_tier(&self) -> u32 {
-        *self as u32
+/// Governance participation metrics tracked on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovParticipationMetrics {
+    /// Total GOV tokens minted (supply).
+    pub total_supply: i128,
+    /// Total number of DAO proposals created.
+    pub proposals_created: u64,
+    /// Total number of votes cast across all proposals.
+    pub total_votes_cast: u64,
+    /// Number of unique voters who have participated.
+    pub unique_voters: u32,
+}
+
+/// Minimum GOV token threshold to create a proposal, in basis points of total supply
+/// (100 = 1%).
+pub const GOV_PROPOSAL_THRESHOLD_BPS: i128 = 100;
+/// BPS denominator for GOV calculations.
+pub const GOV_BPS_DENOMINATOR: i128 = 10_000;
+/// Default DAO voting period in seconds (7 days).
+pub const DAO_VOTING_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
+/// Default DAO timelock after voting before execution, in seconds (2 days).
+pub const DAO_TIMELOCK_SECS: u64 = 2 * 24 * 60 * 60;
+/// Quorum: percentage of total supply that must vote, in basis points (1000 = 10%).
+pub const GOV_QUORUM_BPS: i128 = 1_000;
+
+// ── Issue #1243: Dynamic Interest Rate Based on Utilization ───────────────────
+
+/// Configuration for the utilization-based dynamic interest rate model.
+///
+/// Rate formula:
+///   - When utilization ≤ `kink_utilization_bps / 10_000`:
+///       rate = base_rate_bps
+///   - When utilization > `kink_utilization_bps / 10_000`:
+///       excess = utilization_bps - kink_utilization_bps
+///       rate = base_rate_bps + (excess * premium_slope_bps / 10_000)
+///   - Capped at `rate_cap_bps`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UtilizationRateConfig {
+    /// Whether utilization-based rate is active.
+    pub enabled: bool,
+    /// Base interest rate when utilization is low, in basis points (e.g. 200 = 2%).
+    pub base_rate_bps: i128,
+    /// Utilization percentage at which the premium slope kicks in, in basis points
+    /// (e.g. 8000 = 80%).
+    pub kink_utilization_bps: i128,
+    /// Slope of the interest rate above the kink, in basis points per basis-point of
+    /// excess utilization (e.g. 300 means each 1% excess utilization adds 3 bps to rate).
+    pub premium_slope_bps: i128,
+    /// Maximum possible interest rate, in basis points (rate cap, e.g. 5000 = 50%).
+    pub rate_cap_bps: i128,
+    /// Minimum possible interest rate, in basis points (rate floor, e.g. 50 = 0.5%).
+    pub rate_floor_bps: i128,
+}
+
+/// A snapshot of a utilization rate change, for tracking history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UtilizationRateSnapshot {
+    /// Ledger timestamp of this snapshot.
+    pub recorded_at: u64,
+    /// Utilization at this point, in basis points (0–10000).
+    pub utilization_bps: i128,
+    /// Effective rate at this point, in basis points.
+    pub effective_rate_bps: i128,
+    /// Total outstanding loan principal at this point, in stroops.
+    pub outstanding_loans: i128,
+    /// Total capital (vouched stake) at this point, in stroops.
+    pub total_capital: i128,
+}
+
+/// Default utilization rate configuration.
+pub fn default_utilization_rate_config() -> UtilizationRateConfig {
+    UtilizationRateConfig {
+        enabled: true,
+        base_rate_bps: 200,          // 2% base rate
+        kink_utilization_bps: 8_000, // kink at 80% utilization
+        premium_slope_bps: 300,      // 3 bps per 1% excess utilization above kink
+        rate_cap_bps: 5_000,         // cap at 50%
+        rate_floor_bps: 50,          // floor at 0.5%
     }
 }
 
-/// Default yield bonus applied based on liquidity tier, in basis points.
-/// Tier 0 (high liquidity): 0 bps bonus (baseline 2%)
-/// Tier 1 (medium-high): 50 bps bonus (2.5%)
-/// Tier 2 (medium-low): 150 bps bonus (3.5%)
-/// Tier 3 (low liquidity): 350 bps bonus (5.5%)
-pub const DEFAULT_LIQUIDITY_TIER_BONUSES: [i128; 4] = [0, 50, 150, 350];
+// ── Issue #1245: Loyalty Program with Tiered Rewards ──────────────────────────
+
+/// Loyalty tier for a user based on total successful loan repayments.
+///
+/// Tiers:
+///   - Bronze: 0–4 repayments
+///   - Silver: 5–19 repayments
+///   - Gold:   20+ repayments
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoyaltyTier {
+    /// 0–4 successful repayments.
+    Bronze,
+    /// 5–19 successful repayments.
+    Silver,
+    /// 20+ successful repayments.
+    Gold,
+}
+
+/// Benefits associated with each loyalty tier.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoyaltyBenefits {
+    /// Interest rate discount in basis points (e.g. 50 = 0.5% reduction).
+    pub interest_rate_discount_bps: i128,
+    /// Protocol fee waiver in basis points (e.g. 10000 = 100% waiver = full fee waiver).
+    pub fee_waiver_bps: u32,
+    /// Minimum stake discount in basis points (e.g. 500 = 5% lower minimum stake).
+    pub min_stake_discount_bps: u32,
+    /// Annual anniversary bonus in basis points (e.g. 100 = 1% bonus on next repayment yield).
+    pub anniversary_bonus_bps: u32,
+}
+
+/// A user's loyalty program record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoyaltyRecord {
+    /// User address.
+    pub user: Address,
+    /// Current loyalty tier.
+    pub tier: LoyaltyTier,
+    /// Number of successful loan repayments.
+    pub repayment_count: u32,
+    /// Timestamp of account registration / first loan.
+    pub member_since: u64,
+    /// Timestamp of last tier upgrade.
+    pub last_tier_upgrade_at: u64,
+    /// Timestamp of last anniversary bonus claimed.
+    pub last_anniversary_bonus_at: u64,
+    /// Total loyalty benefits earned (cumulative interest saved, in stroops).
+    pub total_benefits_earned: i128,
+}
+
+/// Repayment thresholds for tier advancement.
+pub const LOYALTY_SILVER_THRESHOLD: u32 = 5;
+pub const LOYALTY_GOLD_THRESHOLD: u32 = 20;
+
+/// Default Bronze tier benefits.
+pub fn loyalty_bronze_benefits() -> LoyaltyBenefits {
+    LoyaltyBenefits {
+        interest_rate_discount_bps: 0,
+        fee_waiver_bps: 0,
+        min_stake_discount_bps: 0,
+        anniversary_bonus_bps: 0,
+    }
+}
+
+/// Default Silver tier benefits.
+pub fn loyalty_silver_benefits() -> LoyaltyBenefits {
+    LoyaltyBenefits {
+        interest_rate_discount_bps: 50,   // 0.5% interest discount
+        fee_waiver_bps: 2_500,            // 25% fee waiver
+        min_stake_discount_bps: 500,      // 5% lower minimum stake
+        anniversary_bonus_bps: 50,        // 0.5% anniversary bonus
+    }
+}
+
+/// Default Gold tier benefits.
+pub fn loyalty_gold_benefits() -> LoyaltyBenefits {
+    LoyaltyBenefits {
+        interest_rate_discount_bps: 150,  // 1.5% interest discount
+        fee_waiver_bps: 10_000,           // 100% fee waiver
+        min_stake_discount_bps: 1_500,    // 15% lower minimum stake
+        anniversary_bonus_bps: 150,       // 1.5% anniversary bonus
+    }
+}
+
+/// Anniversary period in seconds (365 days).
+pub const LOYALTY_ANNIVERSARY_PERIOD_SECS: u64 = 365 * 24 * 60 * 60;

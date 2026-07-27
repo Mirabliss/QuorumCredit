@@ -1,535 +1,645 @@
-openapi: 3.0.0
+# Issue #1280: This file documents ONLY the REST endpoints that
+# server/src/http/routes.ts (and webhookRoutes.ts) actually serve.
+# It was previously inflated with 51 Soroban contract function paths
+# that 404'd in every real deployment.
+#
+# Source of truth: server/src/http/routes.ts
+# CI drift check: .github/workflows/openapi-drift.yml
+openapi: "3.0.3"
 info:
-  title: QuorumCredit API
-  description: Decentralized microlending platform powered by social trust on Stellar Soroban
-  version: 1.0.0
-  contact:
-    name: QuorumCredit Team
-    url: https://github.com/QuorumCredit/QuorumCredit
+  title: QuorumCredit Broadcast Server API
+  description: |
+    REST API served by the QuorumCredit broadcast/relay server
+    (`server/src/index.ts`).
+
+    This spec covers **only** the HTTP routes registered in
+    `server/src/http/routes.ts` and `server/src/http/webhookRoutes.ts`.
+    Soroban contract functions (vouch, request_loan, repay, etc.) are
+    invoked via the Stellar RPC directly — they are not wrapped as REST
+    endpoints here. See `docs/openapi.yaml` for the contract-function
+    reference (RPC-style).
+  version: "2.0.0"
   license:
     name: MIT
-    url: https://opensource.org/licenses/MIT
 
 servers:
-  - url: https://soroban-testnet.stellar.org:443
-    description: Stellar Testnet
-  - url: https://rpc.mainnet.stellar.org:443
-    description: Stellar Mainnet
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.quorumcredit.xyz
+    description: Production
+
+tags:
+  - name: health
+    description: Liveness and readiness probes
+  - name: metrics
+    description: Prometheus metrics scrape endpoint
+  - name: auth
+    description: API token issuance
+  - name: expenses
+    description: Loan expense tracking
+  - name: recurring-payments
+    description: Recurring repayment schedules
+  - name: webhooks
+    description: Webhook registration and management
 
 paths:
-  /initialize:
-    post:
-      summary: Initialize the contract
-      description: One-time setup of the QuorumCredit contract with admin addresses and token
-      operationId: initialize
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/InitializeRequest'
-      responses:
-        '200':
-          description: Contract initialized successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TransactionResponse'
-        '400':
-          description: Invalid parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /vouch:
-    post:
-      summary: Stake tokens to vouch for a borrower
-      description: Create social collateral by staking XLM for a borrower
-      operationId: vouch
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/VouchRequest'
-      responses:
-        '200':
-          description: Vouch created successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TransactionResponse'
-        '400':
-          description: Invalid vouch parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /batch-vouch:
-    post:
-      summary: Stake for multiple borrowers atomically
-      description: Create vouches for multiple borrowers in a single transaction
-      operationId: batchVouch
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BatchVouchRequest'
-      responses:
-        '200':
-          description: Batch vouch created successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TransactionResponse'
-        '400':
-          description: Invalid batch vouch parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /request-loan:
-    post:
-      summary: Request a loan
-      description: Borrow funds if sufficient vouches exist
-      operationId: requestLoan
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RequestLoanRequest'
-      responses:
-        '200':
-          description: Loan disbursed successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoanResponse'
-        '400':
-          description: Loan request failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /repay:
-    post:
-      summary: Repay a loan
-      description: Repay loan principal and distribute yield to vouchers
-      operationId: repay
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RepayRequest'
-      responses:
-        '200':
-          description: Loan repaid successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TransactionResponse'
-        '400':
-          description: Repayment failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /slash:
-    post:
-      summary: Slash a defaulted borrower
-      description: Admin marks default and burns 50% of voucher stakes
-      operationId: slash
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SlashRequest'
-      responses:
-        '200':
-          description: Slash executed successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TransactionResponse'
-        '400':
-          description: Slash failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /get-loan/{borrower}:
+  # ── Health ──────────────────────────────────────────────────────────────────
+  /health:
     get:
-      summary: Get loan record for a borrower
-      description: Retrieve active loan details
-      operationId: getLoan
-      parameters:
-        - name: borrower
-          in: path
-          required: true
-          schema:
-            type: string
-            description: Borrower address
+      tags: [health]
+      summary: Health check
+      description: Returns `{ "status": "ok" }` when the server is running.
+      operationId: getHealth
       responses:
-        '200':
-          description: Loan record retrieved
+        "200":
+          description: Server is healthy
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoanRecord'
-        '404':
-          description: No active loan found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: "#/components/schemas/HealthResponse"
 
-  /get-vouches/{borrower}:
+  # ── Metrics ─────────────────────────────────────────────────────────────────
+  /metrics:
     get:
-      summary: Get all vouches for a borrower
-      description: Retrieve list of all vouchers and their stakes
-      operationId: getVouches
-      parameters:
-        - name: borrower
-          in: path
-          required: true
-          schema:
-            type: string
-            description: Borrower address
+      tags: [metrics]
+      summary: Prometheus metrics
+      description: Exposes internal counters in Prometheus text format.
+      operationId: getMetrics
       responses:
-        '200':
-          description: Vouches retrieved
+        "200":
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  # ── Auth ────────────────────────────────────────────────────────────────────
+  /api/auth/token:
+    post:
+      tags: [auth]
+      summary: Issue a JWT
+      description: |
+        Exchange an API key for a short-lived JWT used to authenticate
+        subsequent requests. In production you must replace the
+        placeholder credential check with a real API-key store lookup.
+      operationId: issueToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+      responses:
+        "200":
+          description: Token issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: Missing or invalid apiKey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Loan Expenses ───────────────────────────────────────────────────────────
+  /loans/{loanId}/expenses:
+    parameters:
+      - $ref: "#/components/parameters/LoanId"
+    post:
+      tags: [expenses]
+      summary: Record a loan expense
+      operationId: addExpense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExpenseRequest"
+      responses:
+        "201":
+          description: Expense recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Expense"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      tags: [expenses]
+      summary: List expenses for a loan
+      operationId: listExpenses
+      responses:
+        "200":
+          description: List of expenses
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/VouchRecord'
-        '404':
-          description: No vouches found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                  $ref: "#/components/schemas/Expense"
 
-  /is-eligible/{borrower}:
+  /loans/{loanId}/expense-breakdown:
+    parameters:
+      - $ref: "#/components/parameters/LoanId"
     get:
-      summary: Check loan eligibility
-      description: Verify if borrower meets stake threshold
-      operationId: isEligible
-      parameters:
-        - name: borrower
-          in: path
-          required: true
-          schema:
-            type: string
-            description: Borrower address
-        - name: threshold
-          in: query
-          required: true
-          schema:
-            type: string
-            description: Minimum stake required in stroops
-        - name: token
-          in: query
-          required: true
-          schema:
-            type: string
-            description: Token contract address
+      tags: [expenses]
+      summary: Expense breakdown by category
+      operationId: getExpenseBreakdown
       responses:
-        '200':
-          description: Eligibility check result
+        "200":
+          description: Category totals
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EligibilityResponse'
+                $ref: "#/components/schemas/ExpenseBreakdown"
 
-  /get-config:
+  # ── Recurring Payments ──────────────────────────────────────────────────────
+  /loans/{loanId}/recurring-payment:
+    parameters:
+      - $ref: "#/components/parameters/LoanId"
+    post:
+      tags: [recurring-payments]
+      summary: Set up a recurring repayment schedule
+      operationId: setupRecurringPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecurringPaymentRequest"
+      responses:
+        "201":
+          description: Schedule created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurringPaymentSchedule"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     get:
-      summary: Get protocol configuration
-      description: Retrieve current protocol settings
-      operationId: getConfig
+      tags: [recurring-payments]
+      summary: Get the recurring payment schedule for a loan
+      operationId: getRecurringPayment
       responses:
-        '200':
-          description: Configuration retrieved
+        "200":
+          description: Schedule details with success rate
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Config'
+                $ref: "#/components/schemas/RecurringPaymentSchedule"
+        "404":
+          description: No schedule found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [recurring-payments]
+      summary: Terminate a recurring payment schedule
+      operationId: terminateRecurringPayment
+      responses:
+        "200":
+          description: Schedule terminated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TerminateResponse"
+        "404":
+          description: No schedule found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
+  /loans/{loanId}/recurring-payment/execute:
+    parameters:
+      - $ref: "#/components/parameters/LoanId"
+    post:
+      tags: [recurring-payments]
+      summary: Manually trigger a due recurring payment
+      operationId: executeRecurringPayment
+      responses:
+        "200":
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecurringPaymentResult"
+        "500":
+          description: Unexpected execution failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Webhooks ────────────────────────────────────────────────────────────────
+  /api/webhooks/register:
+    post:
+      tags: [webhooks]
+      summary: Register a new webhook endpoint
+      operationId: registerWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterWebhookRequest"
+      responses:
+        "201":
+          description: Webhook registered — secret returned once only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookRegistration"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/webhooks:
+    get:
+      tags: [webhooks]
+      summary: List all registered webhooks (secrets redacted)
+      operationId: listWebhooks
+      responses:
+        "200":
+          description: Array of webhook registrations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WebhookSummary"
+
+  /api/webhooks/{webhookId}:
+    parameters:
+      - $ref: "#/components/parameters/WebhookId"
+    get:
+      tags: [webhooks]
+      summary: Get a single webhook registration
+      operationId: getWebhook
+      responses:
+        "200":
+          description: Webhook details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSummary"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags: [webhooks]
+      summary: Update a webhook registration
+      operationId: updateWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWebhookRequest"
+      responses:
+        "200":
+          description: Updated webhook
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSummary"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [webhooks]
+      summary: Delete a webhook registration
+      operationId: deleteWebhook
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeletedResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/webhooks/{webhookId}/test:
+    parameters:
+      - $ref: "#/components/parameters/WebhookId"
+    post:
+      tags: [webhooks]
+      summary: Send a test event to a registered webhook
+      operationId: testWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestWebhookRequest"
+      responses:
+        "200":
+          description: Test delivery result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestWebhookResponse"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /webhook:
+    post:
+      tags: [webhooks]
+      summary: Receive an incoming signed webhook
+      description: |
+        Endpoint for receiving externally-posted webhook events.
+        Validates the `X-Webhook-Signature` header against the configured
+        `webhookSecret`.
+      operationId: receiveWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: Event processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookReceiveResponse"
+        "401":
+          description: Invalid signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+# ── Components ──────────────────────────────────────────────────────────────
 components:
+  parameters:
+    LoanId:
+      name: loanId
+      in: path
+      required: true
+      description: Loan identifier (string)
+      schema:
+        type: string
+    WebhookId:
+      name: webhookId
+      in: path
+      required: true
+      description: Webhook registration identifier
+      schema:
+        type: string
+
   schemas:
-    InitializeRequest:
+    ErrorResponse:
       type: object
-      required:
-        - deployer
-        - admins
-        - admin_threshold
-        - token
+      required: [error]
       properties:
-        deployer:
+        error:
           type: string
-          description: Deployer address (must sign transaction)
-        admins:
-          type: array
-          items:
-            type: string
-          description: Admin addresses for governance
-        admin_threshold:
-          type: integer
-          description: Minimum signatures required for admin operations
-        token:
-          type: string
-          description: Primary token contract address
 
-    VouchRequest:
+    HealthResponse:
       type: object
-      required:
-        - voucher
-        - borrower
-        - stake
-        - token
+      required: [status]
       properties:
-        voucher:
+        status:
           type: string
-          description: Voucher address (must sign)
+          example: ok
+
+    TokenRequest:
+      type: object
+      required: [apiKey]
+      properties:
+        apiKey:
+          type: string
         borrower:
           type: string
-          description: Borrower address
-        stake:
-          type: string
-          description: Stake amount in stroops
+          description: Optional borrower address to embed in the JWT
+
+    TokenResponse:
+      type: object
+      required: [token]
+      properties:
         token:
           type: string
-          description: Token contract address
+          description: Signed JWT
 
-    BatchVouchRequest:
+    ExpenseRequest:
       type: object
-      required:
-        - voucher
-        - borrowers
-        - stakes
-        - token
+      required: [category, amount]
       properties:
-        voucher:
+        category:
           type: string
-          description: Voucher address (must sign)
-        borrowers:
-          type: array
-          items:
-            type: string
-          description: Borrower addresses
-        stakes:
-          type: array
-          items:
-            type: string
-          description: Stake amounts in stroops (must match borrowers length)
-        token:
-          type: string
-          description: Token contract address
-
-    RequestLoanRequest:
-      type: object
-      required:
-        - borrower
-        - amount
-        - threshold
-        - loan_purpose
-        - token
-      properties:
-        borrower:
-          type: string
-          description: Borrower address (must sign)
+          enum: [business, education, healthcare, other]
         amount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        description:
           type: string
-          description: Loan amount in stroops
-        threshold:
+        declaredPurpose:
           type: string
-          description: Minimum total stake required
-        loan_purpose:
-          type: string
-          description: Purpose of the loan
-        token:
-          type: string
-          description: Token contract address
 
-    RepayRequest:
-      type: object
-      required:
-        - borrower
-        - payment
-      properties:
-        borrower:
-          type: string
-          description: Borrower address (must sign)
-        payment:
-          type: string
-          description: Repayment amount in stroops
-
-    SlashRequest:
-      type: object
-      required:
-        - admin_signers
-        - borrower
-      properties:
-        admin_signers:
-          type: array
-          items:
-            type: string
-          description: Admin addresses signing the slash
-        borrower:
-          type: string
-          description: Borrower address to slash
-
-    LoanRecord:
+    Expense:
       type: object
       properties:
         id:
           type: string
-          description: Unique loan ID
-        borrower:
+        loanId:
           type: string
-          description: Borrower address
+        category:
+          type: string
         amount:
+          type: number
+        description:
           type: string
-          description: Principal amount in stroops
-        amount_repaid:
-          type: string
-          description: Amount repaid so far in stroops
-        total_yield:
-          type: string
-          description: Total yield locked in stroops
-        status:
-          type: string
-          enum: [Active, Repaid, Defaulted]
-          description: Current loan status
-        created_at:
-          type: string
-          format: date-time
-          description: Loan creation timestamp
-        deadline:
-          type: string
-          format: date-time
-          description: Repayment deadline
-        loan_purpose:
-          type: string
-          description: Purpose of the loan
+        createdAt:
+          type: integer
+          format: int64
 
-    VouchRecord:
+    ExpenseBreakdown:
+      type: object
+      additionalProperties:
+        type: number
+      description: Map of category → total amount
+
+    RecurringPaymentRequest:
+      type: object
+      required: [amount, frequencySeconds]
+      properties:
+        amount:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        frequencySeconds:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        startDate:
+          type: integer
+          format: int64
+          description: Unix epoch milliseconds; defaults to now
+
+    RecurringPaymentSchedule:
       type: object
       properties:
-        voucher:
+        loanId:
           type: string
-          description: Voucher address
-        stake:
-          type: string
-          description: Staked amount in stroops
-        vouch_timestamp:
-          type: string
-          format: date-time
-          description: When the vouch was created
-        token:
-          type: string
-          description: Token contract address
-
-    Config:
-      type: object
-      properties:
-        admins:
-          type: array
-          items:
-            type: string
-          description: Admin addresses
-        admin_threshold:
+        amount:
+          type: number
+        frequencySeconds:
+          type: number
+        startDate:
           type: integer
-          description: Minimum signatures required
-        token:
-          type: string
-          description: Primary token address
-        allowed_tokens:
-          type: array
-          items:
-            type: string
-          description: Allowed token addresses
-        yield_bps:
-          type: integer
-          description: Yield rate in basis points
-        slash_bps:
-          type: integer
-          description: Slash rate in basis points
-        min_loan_amount:
-          type: string
-          description: Minimum loan amount in stroops
-        max_loan_amount:
-          type: string
-          description: Maximum loan amount in stroops
-        loan_duration:
-          type: integer
-          description: Loan duration in seconds
-
-    EligibilityResponse:
-      type: object
-      properties:
-        eligible:
+          format: int64
+        active:
           type: boolean
-          description: Whether borrower is eligible
-        total_vouched:
-          type: string
-          description: Total vouched amount in stroops
-        threshold:
-          type: string
-          description: Required threshold in stroops
-
-    TransactionResponse:
-      type: object
-      properties:
-        transaction_hash:
-          type: string
-          description: Transaction hash on Stellar
-        status:
-          type: string
-          enum: [success, pending, failed]
-          description: Transaction status
-        timestamp:
-          type: string
-          format: date-time
-          description: Transaction timestamp
-
-    LoanResponse:
-      type: object
-      properties:
-        transaction_hash:
-          type: string
-          description: Transaction hash
-        loan_id:
-          type: string
-          description: Unique loan ID
-        amount_disbursed:
-          type: string
-          description: Amount disbursed in stroops
-        deadline:
-          type: string
-          format: date-time
-          description: Repayment deadline
-
-    ErrorResponse:
-      type: object
-      properties:
-        code:
+        successRateBps:
           type: integer
-          description: Error code
+          description: Success rate in basis points (0–10000)
+
+    TerminateResponse:
+      type: object
+      required: [loanId, active]
+      properties:
+        loanId:
+          type: string
+        active:
+          type: boolean
+          example: false
+
+    RecurringPaymentResult:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
         message:
           type: string
-          description: Error message
-        details:
+
+    RegisterWebhookRequest:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+            enum:
+              - loan.requested
+              - loan.disbursed
+              - loan.repaid
+              - loan.defaulted
+              - vouch.created
+              - vouch.withdrawn
+              - slash.executed
+              - config.updated
+
+    UpdateWebhookRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+
+    WebhookRegistration:
+      type: object
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+          description: Signing secret — only returned at registration time
+        message:
+          type: string
+
+    WebhookSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        createdAt:
+          type: integer
+          format: int64
+
+    DeletedResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+
+    TestWebhookRequest:
+      type: object
+      required: [event]
+      properties:
+        event:
+          type: string
+        data:
           type: object
-          description: Additional error details
+          additionalProperties: true
+
+    TestWebhookResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        statusCode:
+          type: integer
+
+    WebhookReceiveResponse:
+      type: object
+      properties:
+        received:
+          type: boolean
