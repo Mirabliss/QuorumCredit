@@ -31,6 +31,8 @@
 
 #![cfg(test)]
 
+extern crate std;
+
 use crate::invariants::{verify_invariants_in_contract, InvariantViolation};
 use crate::types::{Config, DataKey};
 use crate::{QuorumCreditContract, QuorumCreditContractClient};
