@@ -1,0 +1,22 @@
+{
+  "description": "Baseline storage key layout. An upgrade must not remove or retype any key below; new keys may be appended.",
+  "instance_storage": [
+    { "key": "Config", "type": "ConfigData" },
+    { "key": "Admins", "type": "Vec<Address>" },
+    { "key": "Paused", "type": "bool" },
+    { "key": "FeeTreasury", "type": "i128" },
+    { "key": "SlashTreasury", "type": "i128" }
+  ],
+  "persistent_storage": [
+    { "key": "Loan(Address, Address)", "type": "LoanData" },
+    { "key": "Vouch(Address, Address, Address)", "type": "VouchData" },
+    { "key": "CreditScore(Address)", "type": "i128" },
+    { "key": "LastVouchTimestamp(Address)", "type": "u64" },
+    { "key": "AllowedToken(Address)", "type": "bool" }
+  ],
+  "notes": [
+    "Any change to an existing key's type is a breaking migration and requires an explicit migration function, not a bare upgrade().",
+    "Removing a key entirely requires a documented deprecation window and a migration function to clear stale entries.",
+    "New keys should have safe defaults so reads against pre-upgrade entries don't panic."
+  ]
+}

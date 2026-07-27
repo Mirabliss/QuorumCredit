@@ -1,0 +1,11 @@
+{
+  "contract_id": "CCONTRACTIDEXAMPLE00000000000000000000000000000000000000",
+  "checks": ["get_config", "get_fee_treasury", "get_slash_treasury"],
+  "validators": [
+    { "name": "sdf-1", "endpoint": "https://soroban-testnet.stellar.org" },
+    { "name": "sdf-2", "endpoint": "https://rpc-validator-2.example.org" },
+    { "name": "community-1", "endpoint": "https://rpc-validator-3.example.org" }
+  ],
+  "alert_webhook": "https://hooks.slack.com/services/REPLACE/WITH/REAL_WEBHOOK",
+  "poll_interval_seconds": 60
+}

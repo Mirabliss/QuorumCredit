@@ -1,0 +1,57 @@
+name: Canary Deployment
+
+# Issue #1231: replaces a big-bang server deploy with a progressive rollout —
+# scripts/canary_deploy.sh shifts traffic in stages (5% -> 25% -> 50% -> 100%),
+# monitoring the canary's error rate and latency at each stage via /metrics and
+# automatically rolling back on a breach. Manual dispatch only: this repo has no
+# load balancer / ingress config to trigger against automatically, so promoting
+# a specific build is an operator decision (which build, which environment).
+
+on:
+  workflow_dispatch:
+    inputs:
+      canary_url:
+        description: "Base URL of the canary server instance (must expose /health and /metrics)"
+        required: true
+      stable_url:
+        description: "Base URL of a stable instance for relative comparison (optional)"
+        required: false
+      steps:
+        description: "Traffic percentages to progress through"
+        required: false
+        default: "5 25 50 100"
+      window_seconds:
+        description: "Observation window per step, in seconds"
+        required: false
+        default: "60"
+
+jobs:
+  canary-rollout:
+    name: Progressive canary rollout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update -y && sudo apt-get install -y jq
+
+      - name: Run canary rollout
+        # No --lb-adapter is wired here: this repo has no load balancer/ingress config
+        # to call. Without one, canary_deploy.sh prints each traffic-weight change as an
+        # operator instruction instead of applying it, while still running the real
+        # metrics-based promote/rollback decision logic. Plug in a real adapter script
+        # (see docs/canary-deployment-guide.md) once your target environment has one.
+        run: |
+          ./scripts/canary_deploy.sh \
+            --canary-url "${{ github.event.inputs.canary_url }}" \
+            ${{ github.event.inputs.stable_url != '' && format('--stable-url {0}', github.event.inputs.stable_url) || '' }} \
+            --steps "${{ github.event.inputs.steps }}" \
+            --window-seconds "${{ github.event.inputs.window_seconds }}"
+
+      - name: Upload canary decision history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-history-${{ github.run_id }}
+          path: deploy/canary-history.jsonl
+          if-no-files-found: warn

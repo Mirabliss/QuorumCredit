@@ -5,15 +5,40 @@ import { defaultAuthRateLimiter, type AuthRateLimiter } from "../auth/rateLimite
 import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { recurringPaymentStore } from "../recurring/recurringPaymentStore.js";
+import { loanCartStore } from "../cart/loanCartStore.js";
 
 export interface RouteContext {
   authSecret: string;
   tokenTtlSeconds: number;
   webhookSecret?: string; // Optional: secret for receiving webhooks
-  /** Issue #1290: provisioned API-key store; defaults to env-loaded store. */
-  apiKeyStore?: ApiKeyStore;
-  /** Issue #1290: per-IP rate limiter for failed auth; defaults to module singleton. */
-  authRateLimiter?: AuthRateLimiter;
+  /** Issue #1227 — undefined only in tests/callers that don't wire cost allocation. */
+  costAllocator?: CostAllocator;
+  /** Issue #1229 — undefined only in tests/callers that don't wire partition detection. */
+  partitionGuard?: PartitionGuard;
+  /** Issue #1231 — deployed version string, surfaced on /health for canary monitoring. */
+  serviceVersion?: string;
+}
+
+/**
+ * Gate for mutating endpoints (issue #1229): while `ctx.partitionGuard` reports this
+ * instance partitioned, the write is queued for replay instead of applied immediately,
+ * and the caller gets a 202 rather than the normal success response. Returns true if
+ * the request was queued (caller must not also apply the write synchronously).
+ */
+function queueIfPartitioned(
+  ctx: RouteContext,
+  res: ServerResponse,
+  perform: () => void,
+  responseBody: Record<string, unknown> = {}
+): boolean {
+  if (!ctx.partitionGuard?.isPartitioned()) return false;
+  ctx.partitionGuard.enqueue(perform);
+  metrics.incCounter("qc_partition_writes_queued_total");
+  res.writeHead(202, { "content-type": "application/json" });
+  res.end(
+    JSON.stringify({ ...responseBody, queued: true, reason: "network partition detected; write queued for replay on recovery" })
+  );
+  return true;
 }
 
 interface TokenRequestBody {
@@ -34,6 +59,12 @@ interface RecurringPaymentRequestBody {
   startDate?: number;
 }
 
+interface CartRequestBody {
+  borrower?: string;
+  amount?: number;
+  tenureSeconds?: number;
+}
+
 /** Minimal router for the handful of REST endpoints this service exposes — not
  * pulling in Express for three routes. */
 export function handleHttpRequest(
@@ -46,7 +77,7 @@ export function handleHttpRequest(
   // Health check
   if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ status: "ok" }));
+    res.end(JSON.stringify({ status: "ok", version: ctx.serviceVersion ?? "unknown" }));
     return;
   }
 
@@ -74,10 +105,28 @@ export function handleHttpRequest(
             res.end(JSON.stringify({ error: "amount must be a positive number" }));
             return;
           }
-          if (body.declaredPurpose) {
-            expenseStore.setDeclaredPurpose(loanId, body.declaredPurpose);
+          const category = body.category;
+          const amount = body.amount;
+          const description = body.description ?? "";
+          const declaredPurpose = body.declaredPurpose;
+
+          if (
+            queueIfPartitioned(
+              ctx,
+              res,
+              () => {
+                if (declaredPurpose) expenseStore.setDeclaredPurpose(loanId, declaredPurpose);
+                expenseStore.addExpense(loanId, category, amount, description);
+                metrics.incCounter("qc_expenses_recorded_total");
+              },
+              { loanId, category, amount }
+            )
+          ) {
+            return;
           }
-          const expense = expenseStore.addExpense(loanId, body.category, body.amount, body.description ?? "");
+
+          if (declaredPurpose) expenseStore.setDeclaredPurpose(loanId, declaredPurpose);
+          const expense = expenseStore.addExpense(loanId, category, amount, description);
           metrics.incCounter("qc_expenses_recorded_total");
           res.writeHead(201, { "content-type": "application/json" });
           res.end(JSON.stringify(expense));
@@ -121,8 +170,25 @@ export function handleHttpRequest(
             res.end(JSON.stringify({ error: "frequencySeconds must be a positive number" }));
             return;
           }
+          const amount = body.amount;
+          const frequencySeconds = body.frequencySeconds;
           const startDate = typeof body.startDate === "number" ? body.startDate : Date.now();
-          const schedule = recurringPaymentStore.setup(loanId, body.amount, body.frequencySeconds, startDate);
+
+          if (
+            queueIfPartitioned(
+              ctx,
+              res,
+              () => {
+                recurringPaymentStore.setup(loanId, amount, frequencySeconds, startDate);
+                metrics.incCounter("qc_recurring_payments_setup_total");
+              },
+              { loanId, amount, frequencySeconds, startDate }
+            )
+          ) {
+            return;
+          }
+
+          const schedule = recurringPaymentStore.setup(loanId, amount, frequencySeconds, startDate);
           metrics.incCounter("qc_recurring_payments_setup_total");
           res.writeHead(201, { "content-type": "application/json" });
           res.end(JSON.stringify(schedule));
@@ -150,6 +216,21 @@ export function handleHttpRequest(
 
     // Early termination (issue #1168).
     if (req.method === "DELETE") {
+      if (
+        queueIfPartitioned(
+          ctx,
+          res,
+          () => {
+            if (recurringPaymentStore.terminate(loanId)) {
+              metrics.incCounter("qc_recurring_payments_terminated_total");
+            }
+          },
+          { loanId }
+        )
+      ) {
+        return;
+      }
+
       const terminated = recurringPaymentStore.terminate(loanId);
       if (!terminated) {
         res.writeHead(404, { "content-type": "application/json" });
@@ -166,6 +247,26 @@ export function handleHttpRequest(
   const recurringExecuteMatch = url.pathname.match(/^\/loans\/([^/]+)\/recurring-payment\/execute$/);
   if (recurringExecuteMatch && req.method === "POST") {
     const loanId = decodeURIComponent(recurringExecuteMatch[1] as string);
+
+    // On-chain fund movement is inherently unsafe to defer blindly during a partition
+    // (the whole point of a partition is we can't trust reaching the chain right now) —
+    // so this endpoint queues the *retry attempt* itself rather than any assumed
+    // outcome, and the replay re-runs the real retry-with-backoff path on recovery.
+    if (
+      queueIfPartitioned(
+        ctx,
+        res,
+        () => {
+          void executeRecurringPayment(loanId).then((result) => {
+            metrics.incCounter(result.ok ? "qc_recurring_payments_success_total" : "qc_recurring_payments_failed_total");
+          });
+        },
+        { loanId }
+      )
+    ) {
+      return;
+    }
+
     executeRecurringPayment(loanId)
       .then((result) => {
         metrics.incCounter(result.ok ? "qc_recurring_payments_success_total" : "qc_recurring_payments_failed_total");
@@ -176,6 +277,99 @@ export function handleHttpRequest(
         res.writeHead(500, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "recurring payment execution failed unexpectedly" }));
       });
+    return;
+  }
+
+  // Loan request cart (batch loan requests, issue: cart system).
+  if (url.pathname === "/cart") {
+    if (req.method === "POST") {
+      readJsonBody<CartRequestBody>(req)
+        .then((body) => {
+          if (!body.borrower) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "borrower required" }));
+            return;
+          }
+          if (typeof body.amount !== "number" || !Number.isFinite(body.amount) || body.amount <= 0) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "amount must be a positive number" }));
+            return;
+          }
+          if (typeof body.tenureSeconds !== "number" || body.tenureSeconds <= 0) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "tenureSeconds must be a positive number" }));
+            return;
+          }
+          const cart = loanCartStore.addItem(body.borrower, body.amount, body.tenureSeconds);
+          metrics.incCounter("qc_cart_items_added_total");
+          res.writeHead(201, { "content-type": "application/json" });
+          res.end(JSON.stringify(cart));
+        })
+        .catch(() => {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid request body" }));
+        });
+      return;
+    }
+
+    if (req.method === "GET") {
+      const borrower = url.searchParams.get("borrower");
+      if (!borrower) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "borrower query param required" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(loanCartStore.getCart(borrower)));
+      return;
+    }
+  }
+
+  if (url.pathname === "/cart/submit" && req.method === "POST") {
+    readJsonBody<CartRequestBody>(req)
+      .then((body) => {
+        if (!body.borrower) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "borrower required" }));
+          return;
+        }
+        const results = loanCartStore.submitBatch(body.borrower);
+        metrics.incCounter("qc_cart_batches_submitted_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ borrower: body.borrower, results }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  if (url.pathname === "/cart/abandon" && req.method === "POST") {
+    readJsonBody<CartRequestBody>(req)
+      .then((body) => {
+        if (!body.borrower) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "borrower required" }));
+          return;
+        }
+        const abandoned = loanCartStore.abandon(body.borrower);
+        if (abandoned) {
+          metrics.incCounter("qc_cart_abandoned_total");
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ borrower: body.borrower, abandoned }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  if (url.pathname === "/cart/stats" && req.method === "GET") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(loanCartStore.getStats()));
     return;
   }
 
@@ -228,8 +422,49 @@ export function handleHttpRequest(
     return;
   }
 
+  // Cost allocation reports (issue #1227)
+  if (req.method === "GET" && url.pathname === "/costs/report") {
+    if (!ctx.costAllocator) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "cost allocation is not configured on this instance" }));
+      return;
+    }
+    const month = url.searchParams.get("month");
+    const report = month ? ctx.costAllocator.monthlyReport(month) : ctx.costAllocator.currentReport();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(report));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/costs/report/monthly") {
+    if (!ctx.costAllocator) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "cost allocation is not configured on this instance" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(ctx.costAllocator.generateMonthlyReports()));
+    return;
+  }
+
+  // Partition status (issue #1229)
+  if (req.method === "GET" && url.pathname === "/status/partition") {
+    if (!ctx.partitionGuard) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "partition detection is not configured on this instance" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(ctx.partitionGuard.status()));
+    return;
+  }
+
   // Webhook endpoints
-  if (url.pathname.startsWith("/api/webhooks") || url.pathname === "/webhook") {
+  if (
+    url.pathname.startsWith("/api/webhooks") ||
+    url.pathname === "/webhook" ||
+    url.pathname === "/webhooks/subscribe"
+  ) {
     const webhookCtx: WebhookRoutesContext = {
       webhookSecret: ctx.webhookSecret,
     };

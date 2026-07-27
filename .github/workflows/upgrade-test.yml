@@ -1,0 +1,85 @@
+name: Contract Upgrade Test Pipeline
+
+# Automates the manual, error-prone parts of a contract upgrade:
+# building pre/post-upgrade WASM, validating state migration,
+# checking backward compatibility, diffing storage layouts, and
+# rolling back automatically if any of those checks fail.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/upgrade_pipeline_test.sh"
+      - "tests/fixtures/upgrade/**"
+      - ".github/workflows/upgrade-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+jobs:
+  upgrade-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-upgrade-pipeline-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build pre-upgrade WASM (base branch)
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/pre-upgrade origin/main
+          (cd /tmp/pre-upgrade && cargo build --release --target wasm32-unknown-unknown)
+          mkdir -p artifacts
+          cp /tmp/pre-upgrade/target/wasm32-unknown-unknown/release/*.wasm artifacts/pre_upgrade.wasm
+
+      - name: Build post-upgrade WASM (this branch)
+        run: |
+          set -euo pipefail
+          cargo build --release --target wasm32-unknown-unknown
+          cp target/wasm32-unknown-unknown/release/*.wasm artifacts/post_upgrade.wasm
+
+      - name: Run upgrade test pipeline
+        id: pipeline
+        run: |
+          chmod +x scripts/upgrade_pipeline_test.sh
+          ./scripts/upgrade_pipeline_test.sh \
+            --pre-wasm artifacts/pre_upgrade.wasm \
+            --post-wasm artifacts/post_upgrade.wasm \
+            --fixtures tests/fixtures/upgrade
+
+      - name: Automatic rollback on failure
+        if: failure() && steps.pipeline.outcome == 'failure'
+        run: |
+          echo "::error::Upgrade pipeline failed validation. Rolling back."
+          ./scripts/upgrade_pipeline_test.sh \
+            --rollback \
+            --pre-wasm artifacts/pre_upgrade.wasm \
+            --fixtures tests/fixtures/upgrade
+          echo "Rollback plan generated at artifacts/rollback_plan.json — apply manually against the target network before re-attempting the upgrade."
+          exit 1
+
+      - name: Upload pipeline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-pipeline-artifacts
+          path: artifacts/
+          retention-days: 14

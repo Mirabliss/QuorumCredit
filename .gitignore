@@ -8,14 +8,16 @@
 .env.local
 .env.*.local
 
-# Test snapshots (Rust insta / vitest / jest)
+# Test snapshots (Issue #1283-1286: keep test snapshots out of repo)
 test_snapshots/
 **/test_snapshots/
 **/*.snap
 **/__snapshots__/
+**/snapshots/
 
 # WASM build artifacts
 *.wasm
+*.wasm.opt
 
 # Windows installer binaries
 *.exe
@@ -29,13 +31,16 @@ test_snapshots/
 .idea/
 *.swp
 *.swo
-
-# OS
+*.iml
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
 # Cargo.lock  # intentionally tracked
@@ -44,18 +49,41 @@ Thumbs.db
 lcov.info
 coverage/
 tarpaulin-report.html
+tarpaulin-report.json
+*.profraw
+*.profdata
+
+# Node / JS tooling
 dashboard/node_modules/
 server/node_modules/
+services/*/node_modules/
+tools/*/node_modules/
+node_modules/
 server/dist/
 dashboard/dist/
+services/*/dist/
+.npm/
+.yarn/
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
-mutants.out.old/
 
-# TypeScript build info
-*.tsbuildinfo
+# Runtime backup archives/snapshots (scripts/backup.sh, scripts/test_backup_restore.sh)
+/backups/
 
-# Temporary / scratch files
-*.tmp
-*.temp
+# Indexer SQLite database (tools/indexer, services/indexer) — runtime state, not source
+indexer.db
+indexer.db-*
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Canary deployment decision history (scripts/canary_deploy.sh)
+/deploy/
+
+# Node modules / build output for TS services
+services/indexer/node_modules/
+services/indexer/dist/
+
+# Restore-drill state files (scripts/restore.sh idempotent/resumable scenario 6)
+*.state.json

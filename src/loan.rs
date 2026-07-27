@@ -1,8 +1,8 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    apply_milestone_bonus, calculate_daily_compound_interest, config, deduct_slash_balance,
-    get_active_loan_record, get_latest_loan_record, has_active_loan, next_loan_id,
-    register_borrower_if_needed, require_allowed_token, require_not_paused,
+    apply_milestone_bonus, bump_instance, bump_persistent, calculate_daily_compound_interest,
+    config, deduct_slash_balance, get_active_loan_record, get_latest_loan_record, has_active_loan,
+    next_loan_id, register_borrower_if_needed, require_allowed_token, require_not_paused,
     require_not_thawing, require_admin_approval, require_governance_participant,
 };
 use crate::reputation::ReputationNftExternalClient;
@@ -267,6 +267,13 @@ pub fn request_loan(
     env.storage()
         .persistent()
         .set(&DataKey::LatestLoan(borrower.clone()), &loan_id);
+
+    // Issue #1285: extend TTL so these entries survive on the live ledger for
+    // the full expected loan lifetime and beyond.
+    bump_persistent(&env, &DataKey::Loan(loan_id));
+    bump_persistent(&env, &DataKey::ActiveLoan(borrower.clone()));
+    bump_persistent(&env, &DataKey::LatestLoan(borrower.clone()));
+    bump_instance(&env);
 
     token.transfer(&env.current_contract_address(), &borrower, &amount);
 
@@ -641,6 +648,11 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
 
+    // Issue #1285: keep the loan record live on the ledger so reads after
+    // repayment (e.g. credit score, history) never trap.
+    bump_persistent(&env, &DataKey::Loan(loan.id));
+    bump_instance(&env);
+
     Ok(())
 }
 
@@ -688,6 +700,10 @@ pub fn repay_partial(
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
+
+    // Issue #1285: extend TTL on partial repay path.
+    bump_persistent(&env, &DataKey::Loan(loan.id));
+    bump_instance(&env);
 
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("prt_rep")),
