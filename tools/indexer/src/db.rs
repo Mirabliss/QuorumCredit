@@ -30,8 +30,17 @@ const SCHEMA_VERSION: i64 = 1;
 pub fn open_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)
         .context("Failed to open SQLite database")?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
-        .context("Failed to set PRAGMAs")?;
+    // busy_timeout tells SQLite to retry for up to 5 s on SQLITE_BUSY before
+    // returning an error.  Without it, any brief writer/reader contention during
+    // a WAL checkpoint yields an immediate error that callers have no way to
+    // recover from.  Must be set before journal_mode so it also applies to the
+    // WAL-mode transition itself.
+    conn.execute_batch(
+        "PRAGMA busy_timeout   = 5000;\
+         PRAGMA journal_mode   = WAL;\
+         PRAGMA synchronous    = NORMAL;",
+    )
+    .context("Failed to set PRAGMAs")?;
     Ok(conn)
 }
 
